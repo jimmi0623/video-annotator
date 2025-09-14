@@ -7,6 +7,7 @@ import cv2
 import os
 import json
 import uuid
+import shutil
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel, Field, validator
@@ -15,8 +16,9 @@ from contextlib import contextmanager
 import logging
 from pathlib import Path
 
-# Import configuration
+# Import configuration and resource management
 from config import settings, logger
+from resource_manager import resource_manager, start_background_tasks
 
 # Configuration from settings
 MAX_FILE_SIZE = settings.max_file_size
@@ -277,6 +279,9 @@ if settings.temp_dir:
 # Initialize database
 init_database()
 
+# Start background resource management tasks
+start_background_tasks(app)
+
 # Serve static files from configured directories
 app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
 app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
@@ -306,7 +311,7 @@ async def upload_video(file: UploadFile = File(...)):
             detail=f"Unsupported video format. Allowed: {', '.join(ALLOWED_VIDEO_EXTENSIONS)}"
         )
     
-    # Check file size
+    # Check file size first before reading content
     content = await file.read()
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(
@@ -317,6 +322,10 @@ async def upload_video(file: UploadFile = File(...)):
     if len(content) == 0:
         raise HTTPException(status_code=400, detail="Empty file")
     
+    # Generate upload ID for tracking
+    upload_id = str(uuid.uuid4())
+    resource_manager.track_upload_progress(upload_id, file.filename, len(content))
+    
     # Generate unique ID and sanitize filename
     video_id = str(uuid.uuid4())
     safe_filename = "".join(c for c in file.filename if c.isalnum() or c in '.-_').rstrip()
@@ -326,11 +335,24 @@ async def upload_video(file: UploadFile = File(...)):
     os.makedirs(settings.upload_dir, exist_ok=True)
     
     try:
-        with open(file_path, "wb") as buffer:
-            buffer.write(content)
+        # Optimize memory usage for large files
+        temp_file_path, file_hash = await resource_manager.optimize_upload_memory(content)
         
-        logger.info(f"File uploaded: {safe_filename} ({len(content)} bytes)")
+        if temp_file_path:
+            # Move temp file to final location
+            shutil.move(temp_file_path, file_path)
+            logger.info(f"Large file uploaded via temp file: {safe_filename} ({len(content)} bytes)")
+        else:
+            # Write directly for smaller files
+            with open(file_path, "wb") as buffer:
+                buffer.write(content)
+            logger.info(f"File uploaded: {safe_filename} ({len(content)} bytes)")
+        
+        # Update upload progress
+        resource_manager.update_upload_progress(upload_id, len(content))
+        
     except Exception as e:
+        resource_manager.complete_upload(upload_id, success=False)
         logger.error(f"Failed to save file: {e}")
         raise HTTPException(status_code=500, detail="Failed to save file")
     
@@ -390,7 +412,12 @@ async def upload_video(file: UploadFile = File(...)):
             ''', (video_id, safe_filename, file_path, duration, fps, width, height, frame_count, datetime.now().isoformat(), len(content)))
             conn.commit()
             logger.info(f"Video metadata saved: {video_id} ({len(content)} bytes)")
+            
+            # Mark upload as successful
+            resource_manager.complete_upload(upload_id, success=True)
+            
     except sqlite3.IntegrityError as e:
+        resource_manager.complete_upload(upload_id, success=False)
         # Clean up file on database error (e.g., duplicate file path)
         try:
             os.remove(file_path)
@@ -399,7 +426,8 @@ async def upload_video(file: UploadFile = File(...)):
         logger.error(f"Database integrity error: {e}")
         raise HTTPException(status_code=409, detail="Video with this path already exists")
     except Exception as e:
-        # Clean up file on database error
+        # Mark upload as failed and clean up file
+        resource_manager.complete_upload(upload_id, success=False)
         try:
             os.remove(file_path)
         except OSError:
@@ -741,6 +769,79 @@ async def get_config():
         "max_class_name_length": settings.max_class_name_length,
         "max_filename_length": settings.max_filename_length,
         "enable_metrics": settings.enable_metrics
+    }
+
+@app.get("/api/resources")
+async def get_resource_stats():
+    """Get comprehensive resource usage statistics"""
+    try:
+        stats = await resource_manager.get_resource_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"Failed to get resource stats: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve resource statistics")
+
+@app.post("/api/resources/cleanup")
+async def manual_cleanup():
+    """Manually trigger resource cleanup"""
+    try:
+        cleaned_count = await resource_manager.cleanup_expired_files()
+        logger.info(f"Manual cleanup completed: {cleaned_count} files removed")
+        return {
+            "status": "completed",
+            "files_cleaned": cleaned_count,
+            "message": f"Cleaned {cleaned_count} expired files"
+        }
+    except Exception as e:
+        logger.error(f"Manual cleanup failed: {e}")
+        raise HTTPException(status_code=500, detail="Cleanup operation failed")
+
+@app.post("/api/resources/emergency-cleanup")
+async def emergency_cleanup():
+    """Perform emergency cleanup when system resources are low"""
+    try:
+        results = await resource_manager.emergency_cleanup()
+        return {
+            "status": "completed",
+            "results": results
+        }
+    except Exception as e:
+        logger.error(f"Emergency cleanup failed: {e}")
+        raise HTTPException(status_code=500, detail="Emergency cleanup failed")
+
+@app.get("/api/resources/duplicates")
+async def find_duplicate_files():
+    """Find duplicate files in the upload directory"""
+    try:
+        duplicates = await resource_manager.detect_duplicate_files()
+        return {
+            "duplicates_found": len(duplicates),
+            "duplicates": duplicates,
+            "total_wasted_space": sum(dup["size"] for dup in duplicates)
+        }
+    except Exception as e:
+        logger.error(f"Failed to detect duplicates: {e}")
+        raise HTTPException(status_code=500, detail="Failed to detect duplicate files")
+
+@app.get("/api/uploads/{upload_id}/progress")
+async def get_upload_progress(upload_id: str):
+    """Get progress information for a specific upload"""
+    try:
+        uuid.UUID(upload_id)  # Validate UUID format
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid upload ID format")
+    
+    progress = resource_manager.get_upload_progress(upload_id)
+    if progress is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    
+    return progress
+
+@app.get("/api/uploads/progress")
+async def get_all_upload_progress():
+    """Get progress information for all active uploads"""
+    return {
+        "active_uploads": resource_manager.get_all_upload_progress()
     }
 
 def export_coco_format(video, annotations):
