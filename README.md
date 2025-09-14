@@ -35,7 +35,7 @@ A professional web-based video annotation tool built with FastAPI and modern web
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/video-annotator.git
+   git clone https://github.com/jimmi0623/video-annotator.git
    cd video-annotator
    ```
 
@@ -179,15 +179,46 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 ### Testing
 ```bash
-# Run the application
+# Run the application (default port 8000)
 python main.py
 
+# Run on different port
+$env:PORT="8080"; python main.py  # Windows PowerShell
+export PORT=8080 && python main.py  # Linux/Mac
+
 # Test video upload via curl
-curl -X POST "http://localhost:8000/api/upload-video" \
+curl -X POST "http://localhost:8080/api/upload-video" \
      -H "accept: application/json" \
      -H "Content-Type: multipart/form-data" \
      -F "file=@test_video.mp4"
+
+# Test API endpoints
+curl http://localhost:8080/api/stats      # Database statistics
+curl http://localhost:8080/api/resources  # Resource usage
+curl http://localhost:8080/api/config     # Public configuration
 ```
+
+### Dependencies
+```
+fastapi>=0.100.0           # Web framework
+uvicorn[standard]>=0.20.0  # ASGI server
+python-multipart>=0.0.6    # File upload support
+opencv-python>=4.7.0       # Video processing
+pydantic>=2.0.0            # Data validation
+pydantic-settings           # Configuration management
+python-json-logger>=2.0.0  # Structured logging
+aiofiles>=23.1.0           # Async file operations
+python-dotenv>=1.0.0       # Environment variables
+psutil>=5.9.0              # System monitoring
+```
+
+### Tested Environments
+- ✅ **Windows 11** with Python 3.13.7
+- ✅ **Memory optimization** for large files (64MB+ tested)
+- ✅ **Database operations** with SQLite
+- ✅ **Video streaming** with HTTP 206 partial content
+- ✅ **All API endpoints** functional
+- ✅ **Background tasks** and resource management
 
 ## 🚀 Deployment
 
@@ -250,7 +281,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 **James Rono** - jimmironno@gmail.com - https://www.linkedin.com/in/mijj0623
 
-Project Link: [https://github.com/yourusername/video-annotator](https://github.com/yourusername/video-annotator)
+Project Link: [https://github.com/jimmi0623/video-annotator](https://github.com/jimmi0623/video-annotator)
 
 ---
 
