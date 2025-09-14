@@ -31,7 +31,7 @@ MAX_FRAME_NUMBER = settings.max_frame_count
 class AnnotationCreate(BaseModel):
     video_id: str = Field(..., min_length=1, max_length=36)
     frame_number: int = Field(..., ge=0, le=MAX_FRAME_NUMBER)
-    annotation_type: str = Field(..., regex='^(bbox|polygon)$')
+    annotation_type: str = Field(..., pattern='^(bbox|polygon)$')
     class_name: str = Field(..., min_length=1, max_length=MAX_CLASS_NAME_LENGTH)
     geometry: dict
     track_id: Optional[int] = Field(None, ge=1)
@@ -858,31 +858,31 @@ def export_coco_format(video, annotations):
             "annotations": [],
             "categories": []
         }
-    
-    # Create images (frames)
-    frame_ids = set()
-    for ann in annotations:
-        frame_ids.add(ann['frame_number'])
-    
-    for frame_id in sorted(frame_ids):
-        coco_data["images"].append({
-            "id": frame_id,
-            "file_name": f"frame_{frame_id:06d}.jpg",
-            "width": video['width'],
-            "height": video['height']
-        })
-    
-    # Create categories
-    class_names = set()
-    for ann in annotations:
-        class_names.add(ann['class_name'])
-    
-    for i, class_name in enumerate(sorted(class_names)):
-        coco_data["categories"].append({
-            "id": i + 1,
-            "name": class_name,
-            "supercategory": "object"
-        })
+        
+        # Create images (frames)
+        frame_ids = set()
+        for ann in annotations:
+            frame_ids.add(ann['frame_number'])
+        
+        for frame_id in sorted(frame_ids):
+            coco_data["images"].append({
+                "id": frame_id,
+                "file_name": f"frame_{frame_id:06d}.jpg",
+                "width": video['width'],
+                "height": video['height']
+            })
+        
+        # Create categories
+        class_names = set()
+        for ann in annotations:
+            class_names.add(ann['class_name'])
+        
+        for i, class_name in enumerate(sorted(class_names)):
+            coco_data["categories"].append({
+                "id": i + 1,
+                "name": class_name,
+                "supercategory": "object"
+            })
     
         # Create annotations
         class_name_to_id = {cat['name']: cat['id'] for cat in coco_data["categories"]}
@@ -942,16 +942,16 @@ def export_yolo_format(video, annotations):
             if frame_num not in frames:
                 frames[frame_num] = []
             frames[frame_num].append(ann)
-    
-    # Get unique class names
-    class_names = sorted(set(ann['class_name'] for ann in annotations))
-    
-    yolo_data = {
-        "classes": class_names,
-        "frames": {}
-    }
-    
-    class_name_to_id = {name: i for i, name in enumerate(class_names)}
+        
+        # Get unique class names
+        class_names = sorted(set(ann['class_name'] for ann in annotations))
+        
+        yolo_data = {
+            "classes": class_names,
+            "frames": {}
+        }
+        
+        class_name_to_id = {name: i for i, name in enumerate(class_names)}
     
         for frame_num, frame_annotations in frames.items():
             yolo_annotations = []
