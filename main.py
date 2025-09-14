@@ -9,22 +9,47 @@ import json
 import uuid
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 import sqlite3
 from contextlib import contextmanager
+import logging
+from pathlib import Path
+
+# Configuration constants
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
+ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
+MAX_FILENAME_LENGTH = 255
+MAX_CLASS_NAME_LENGTH = 50
+MAX_FRAME_NUMBER = 999999
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Pydantic Models
 class AnnotationCreate(BaseModel):
-    video_id: str
-    frame_number: int
-    annotation_type: str  # 'bbox', 'polygon'
-    class_name: str
+    video_id: str = Field(..., min_length=1, max_length=36)
+    frame_number: int = Field(..., ge=0, le=MAX_FRAME_NUMBER)
+    annotation_type: str = Field(..., regex='^(bbox|polygon)$')
+    class_name: str = Field(..., min_length=1, max_length=MAX_CLASS_NAME_LENGTH)
     geometry: dict
-    track_id: Optional[int] = None
+    track_id: Optional[int] = Field(None, ge=1)
+    
+    @validator('class_name')
+    def validate_class_name(cls, v):
+        if not v.strip():
+            raise ValueError('Class name cannot be empty or whitespace')
+        return v.strip().lower()
 
 class AnnotationUpdate(BaseModel):
     geometry: dict
-    class_name: Optional[str] = None
+    class_name: Optional[str] = Field(None, min_length=1, max_length=MAX_CLASS_NAME_LENGTH)
+    
+    @validator('class_name')
+    def validate_class_name(cls, v):
+        if v and not v.strip():
+            raise ValueError('Class name cannot be empty or whitespace')
+        return v.strip().lower() if v else None
 
 class VideoInfo(BaseModel):
     id: str
@@ -86,12 +111,19 @@ def get_db():
 # Initialize FastAPI app
 app = FastAPI(title="Video Annotation Tool", version="1.0.0")
 
-# CORS middleware
+# CORS middleware - Restrict origins in production
+allowed_origins = [
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    # Add your production domains here
+    # "https://your-domain.com",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -115,22 +147,60 @@ async def read_root():
 @app.post("/api/upload-video", response_model=VideoInfo)
 async def upload_video(file: UploadFile = File(...)):
     """Upload and process a video file"""
-    if not file.filename.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
-        raise HTTPException(status_code=400, detail="Unsupported video format")
+    # Validate file
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
     
-    # Generate unique ID and save file
+    # Check filename length
+    if len(file.filename) > MAX_FILENAME_LENGTH:
+        raise HTTPException(status_code=400, detail="Filename too long")
+    
+    # Check file extension
+    file_extension = Path(file.filename).suffix.lower()
+    if file_extension not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported video format. Allowed: {', '.join(ALLOWED_VIDEO_EXTENSIONS)}"
+        )
+    
+    # Check file size
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413, 
+            detail=f"File too large. Maximum size: {MAX_FILE_SIZE // (1024*1024)}MB"
+        )
+    
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Empty file")
+    
+    # Generate unique ID and sanitize filename
     video_id = str(uuid.uuid4())
-    file_path = f"uploads/{video_id}_{file.filename}"
+    safe_filename = "".join(c for c in file.filename if c.isalnum() or c in '.-_').rstrip()
+    file_path = f"uploads/{video_id}_{safe_filename}"
     
-    with open(file_path, "wb") as buffer:
-        content = await file.read()
-        buffer.write(content)
+    # Ensure uploads directory exists
+    os.makedirs("uploads", exist_ok=True)
+    
+    try:
+        with open(file_path, "wb") as buffer:
+            buffer.write(content)
+        
+        logger.info(f"File uploaded: {safe_filename} ({len(content)} bytes)")
+    except Exception as e:
+        logger.error(f"Failed to save file: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save file")
     
     # Extract video metadata using OpenCV
     cap = cv2.VideoCapture(file_path)
     if not cap.isOpened():
-        os.remove(file_path)
-        raise HTTPException(status_code=400, detail="Could not open video file")
+        # Clean up file on failure
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        logger.error(f"Could not open video file: {file_path}")
+        raise HTTPException(status_code=400, detail="Invalid video file or corrupted")
     
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -140,18 +210,52 @@ async def upload_video(file: UploadFile = File(...)):
     
     cap.release()
     
+    # Validate video properties
+    if fps <= 0 or frame_count <= 0 or width <= 0 or height <= 0:
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        logger.error(f"Invalid video properties: fps={fps}, frames={frame_count}, size={width}x{height}")
+        raise HTTPException(status_code=400, detail="Invalid video properties")
+    
+    # Check reasonable video limits
+    if frame_count > MAX_FRAME_NUMBER:
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=400, detail="Video too long (max frames exceeded)")
+    
+    if width > 4096 or height > 4096:
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=400, detail="Video resolution too high (max 4096x4096)")
+    
     # Save to database
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO videos (id, filename, file_path, duration, fps, width, height, frame_count, upload_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (video_id, file.filename, file_path, duration, fps, width, height, frame_count, datetime.now().isoformat()))
-        conn.commit()
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO videos (id, filename, file_path, duration, fps, width, height, frame_count, upload_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (video_id, safe_filename, file_path, duration, fps, width, height, frame_count, datetime.now().isoformat()))
+            conn.commit()
+            logger.info(f"Video metadata saved: {video_id}")
+    except Exception as e:
+        # Clean up file on database error
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        logger.error(f"Database error while saving video: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save video metadata")
     
     return VideoInfo(
         id=video_id,
-        filename=file.filename,
+        filename=safe_filename,
         duration=duration,
         fps=fps,
         width=width,
@@ -184,109 +288,212 @@ async def create_annotation(annotation: AnnotationCreate):
     """Create a new annotation"""
     annotation_id = str(uuid.uuid4())
     
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO annotations (id, video_id, frame_number, annotation_type, class_name, geometry, track_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            annotation_id,
-            annotation.video_id,
-            annotation.frame_number,
-            annotation.annotation_type,
-            annotation.class_name,
-            json.dumps(annotation.geometry),
-            annotation.track_id,
-            datetime.now().isoformat()
-        ))
-        conn.commit()
+    # Validate that the video exists
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM videos WHERE id = ?", (annotation.video_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="Video not found")
+            
+            # Validate geometry based on annotation type
+            if annotation.annotation_type == 'bbox':
+                geometry = annotation.geometry
+                required_keys = {'x', 'y', 'width', 'height'}
+                if not all(key in geometry for key in required_keys):
+                    raise HTTPException(status_code=400, detail="Bounding box must have x, y, width, height")
+                
+                # Validate numeric values
+                for key in required_keys:
+                    if not isinstance(geometry[key], (int, float)) or geometry[key] < 0:
+                        raise HTTPException(status_code=400, detail=f"Invalid {key} value")
+                        
+            elif annotation.annotation_type == 'polygon':
+                geometry = annotation.geometry
+                if 'points' not in geometry or not isinstance(geometry['points'], list):
+                    raise HTTPException(status_code=400, detail="Polygon must have points array")
+                
+                if len(geometry['points']) < 3:
+                    raise HTTPException(status_code=400, detail="Polygon must have at least 3 points")
+                
+                for i, point in enumerate(geometry['points']):
+                    if not isinstance(point, dict) or 'x' not in point or 'y' not in point:
+                        raise HTTPException(status_code=400, detail=f"Invalid point {i} format")
+                    if not isinstance(point['x'], (int, float)) or not isinstance(point['y'], (int, float)):
+                        raise HTTPException(status_code=400, detail=f"Invalid coordinates in point {i}")
+            
+            cursor.execute('''
+                INSERT INTO annotations (id, video_id, frame_number, annotation_type, class_name, geometry, track_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                annotation_id,
+                annotation.video_id,
+                annotation.frame_number,
+                annotation.annotation_type,
+                annotation.class_name,
+                json.dumps(annotation.geometry),
+                annotation.track_id,
+                datetime.now().isoformat()
+            ))
+            conn.commit()
+            logger.info(f"Annotation created: {annotation_id} for video {annotation.video_id}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create annotation: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create annotation")
     
     return {"id": annotation_id, "status": "created"}
 
 @app.get("/api/annotations/{video_id}")
 async def get_annotations(video_id: str, frame_number: Optional[int] = None):
     """Get annotations for a video, optionally filtered by frame"""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        if frame_number is not None:
-            cursor.execute('''
-                SELECT * FROM annotations 
-                WHERE video_id = ? AND frame_number = ?
-            ''', (video_id, frame_number))
-        else:
-            cursor.execute('''
-                SELECT * FROM annotations 
-                WHERE video_id = ?
-                ORDER BY frame_number
-            ''', (video_id,))
-        
-        annotations = cursor.fetchall()
-        
-        result = []
-        for ann in annotations:
-            result.append({
-                "id": ann['id'],
-                "video_id": ann['video_id'],
-                "frame_number": ann['frame_number'],
-                "annotation_type": ann['annotation_type'],
-                "class_name": ann['class_name'],
-                "geometry": json.loads(ann['geometry']),
-                "track_id": ann['track_id'],
-                "created_at": ann['created_at']
-            })
-        
-        return result
+    # Validate video_id format
+    try:
+        uuid.UUID(video_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid video ID format")
+    
+    # Validate frame_number if provided
+    if frame_number is not None and (frame_number < 0 or frame_number > MAX_FRAME_NUMBER):
+        raise HTTPException(status_code=400, detail="Invalid frame number")
+    
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Verify video exists
+            cursor.execute("SELECT id FROM videos WHERE id = ?", (video_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="Video not found")
+            
+            if frame_number is not None:
+                cursor.execute('''
+                    SELECT * FROM annotations 
+                    WHERE video_id = ? AND frame_number = ?
+                ''', (video_id, frame_number))
+            else:
+                cursor.execute('''
+                    SELECT * FROM annotations 
+                    WHERE video_id = ?
+                    ORDER BY frame_number
+                ''', (video_id,))
+            
+            annotations = cursor.fetchall()
+            
+            result = []
+            for ann in annotations:
+                try:
+                    geometry = json.loads(ann['geometry'])
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid geometry JSON in annotation {ann['id']}")
+                    continue
+                    
+                result.append({
+                    "id": ann['id'],
+                    "video_id": ann['video_id'],
+                    "frame_number": ann['frame_number'],
+                    "annotation_type": ann['annotation_type'],
+                    "class_name": ann['class_name'],
+                    "geometry": geometry,
+                    "track_id": ann['track_id'],
+                    "created_at": ann['created_at']
+                })
+            
+            return result
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get annotations for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve annotations")
 
 @app.delete("/api/annotations/{annotation_id}")
 async def delete_annotation(annotation_id: str):
     """Delete an annotation"""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM annotations WHERE id = ?", (annotation_id,))
-        conn.commit()
-        
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Annotation not found")
+    # Validate annotation_id format
+    try:
+        uuid.UUID(annotation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid annotation ID format")
+    
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM annotations WHERE id = ?", (annotation_id,))
+            conn.commit()
+            
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Annotation not found")
+            
+            logger.info(f"Annotation deleted: {annotation_id}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete annotation {annotation_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete annotation")
     
     return {"status": "deleted"}
 
 @app.get("/api/export/{video_id}")
 async def export_annotations(video_id: str, format: str = "coco"):
     """Export annotations in various formats"""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        
-        # Get video info
-        cursor.execute("SELECT * FROM videos WHERE id = ?", (video_id,))
-        video = cursor.fetchone()
-        if not video:
-            raise HTTPException(status_code=404, detail="Video not found")
-        
-        # Get annotations
-        cursor.execute("SELECT * FROM annotations WHERE video_id = ?", (video_id,))
-        annotations = cursor.fetchall()
-        
-        if format.lower() == "coco":
-            return export_coco_format(video, annotations)
-        elif format.lower() == "yolo":
-            return export_yolo_format(video, annotations)
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported export format")
+    # Validate video_id format
+    try:
+        uuid.UUID(video_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid video ID format")
+    
+    # Validate format
+    allowed_formats = {"coco", "yolo"}
+    if format.lower() not in allowed_formats:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported export format. Allowed: {', '.join(allowed_formats)}"
+        )
+    
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get video info
+            cursor.execute("SELECT * FROM videos WHERE id = ?", (video_id,))
+            video = cursor.fetchone()
+            if not video:
+                raise HTTPException(status_code=404, detail="Video not found")
+            
+            # Get annotations
+            cursor.execute("SELECT * FROM annotations WHERE video_id = ?", (video_id,))
+            annotations = cursor.fetchall()
+            
+            logger.info(f"Exporting {len(annotations)} annotations for video {video_id} in {format} format")
+            
+            if format.lower() == "coco":
+                return export_coco_format(video, annotations)
+            elif format.lower() == "yolo":
+                return export_yolo_format(video, annotations)
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to export annotations for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to export annotations")
 
 def export_coco_format(video, annotations):
     """Export in COCO format"""
-    coco_data = {
-        "info": {
-            "description": f"Annotations for {video['filename']}",
-            "version": "1.0",
-            "year": 2024
-        },
-        "licenses": [],
-        "images": [],
-        "annotations": [],
-        "categories": []
-    }
+    try:
+        coco_data = {
+            "info": {
+                "description": f"Annotations for {video['filename']}",
+                "version": "1.0",
+                "year": 2024
+            },
+            "licenses": [],
+            "images": [],
+            "annotations": [],
+            "categories": []
+        }
     
     # Create images (frames)
     frame_ids = set()
@@ -313,43 +520,64 @@ def export_coco_format(video, annotations):
             "supercategory": "object"
         })
     
-    # Create annotations
-    class_name_to_id = {cat['name']: cat['id'] for cat in coco_data["categories"]}
-    
-    for i, ann in enumerate(annotations):
-        geometry = json.loads(ann['geometry'])
+        # Create annotations
+        class_name_to_id = {cat['name']: cat['id'] for cat in coco_data["categories"]}
         
-        if ann['annotation_type'] == 'bbox':
-            bbox = [geometry['x'], geometry['y'], geometry['width'], geometry['height']]
-            area = geometry['width'] * geometry['height']
-        else:
-            # For polygon, calculate bbox and area
-            points = geometry['points']
-            xs = [p['x'] for p in points]
-            ys = [p['y'] for p in points]
-            bbox = [min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)]
-            area = bbox[2] * bbox[3]  # Approximation
+        for i, ann in enumerate(annotations):
+            try:
+                geometry = json.loads(ann['geometry'])
+                
+                if ann['annotation_type'] == 'bbox':
+                    if not all(key in geometry for key in ['x', 'y', 'width', 'height']):
+                        logger.warning(f"Skipping invalid bbox annotation {ann['id']}")
+                        continue
+                    bbox = [geometry['x'], geometry['y'], geometry['width'], geometry['height']]
+                    area = geometry['width'] * geometry['height']
+                else:
+                    # For polygon, calculate bbox and area
+                    if 'points' not in geometry or not geometry['points']:
+                        logger.warning(f"Skipping invalid polygon annotation {ann['id']}")
+                        continue
+                    points = geometry['points']
+                    if len(points) < 3:
+                        logger.warning(f"Skipping polygon with insufficient points: {ann['id']}")
+                        continue
+                    xs = [p['x'] for p in points if 'x' in p and 'y' in p]
+                    ys = [p['y'] for p in points if 'x' in p and 'y' in p]
+                    if len(xs) != len(points) or len(xs) < 3:
+                        logger.warning(f"Skipping polygon with invalid points: {ann['id']}")
+                        continue
+                    bbox = [min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)]
+                    area = bbox[2] * bbox[3]  # Approximation
+                
+                coco_data["annotations"].append({
+                    "id": i + 1,
+                    "image_id": ann['frame_number'],
+                    "category_id": class_name_to_id[ann['class_name']],
+                    "bbox": bbox,
+                    "area": area,
+                    "iscrowd": 0
+                })
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                logger.error(f"Error processing annotation {ann['id']}: {e}")
+                continue
         
-        coco_data["annotations"].append({
-            "id": i + 1,
-            "image_id": ann['frame_number'],
-            "category_id": class_name_to_id[ann['class_name']],
-            "bbox": bbox,
-            "area": area,
-            "iscrowd": 0
-        })
+        return coco_data
     
-    return coco_data
+    except Exception as e:
+        logger.error(f"Error in COCO export: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate COCO format")
 
 def export_yolo_format(video, annotations):
     """Export in YOLO format"""
-    # Group annotations by frame
-    frames = {}
-    for ann in annotations:
-        frame_num = ann['frame_number']
-        if frame_num not in frames:
-            frames[frame_num] = []
-        frames[frame_num].append(ann)
+    try:
+        # Group annotations by frame
+        frames = {}
+        for ann in annotations:
+            frame_num = ann['frame_number']
+            if frame_num not in frames:
+                frames[frame_num] = []
+            frames[frame_num].append(ann)
     
     # Get unique class names
     class_names = sorted(set(ann['class_name'] for ann in annotations))
@@ -361,25 +589,44 @@ def export_yolo_format(video, annotations):
     
     class_name_to_id = {name: i for i, name in enumerate(class_names)}
     
-    for frame_num, frame_annotations in frames.items():
-        yolo_annotations = []
-        
-        for ann in frame_annotations:
-            geometry = json.loads(ann['geometry'])
-            class_id = class_name_to_id[ann['class_name']]
+        for frame_num, frame_annotations in frames.items():
+            yolo_annotations = []
             
-            if ann['annotation_type'] == 'bbox':
-                # Convert to YOLO format (normalized center coordinates and dimensions)
-                x_center = (geometry['x'] + geometry['width'] / 2) / video['width']
-                y_center = (geometry['y'] + geometry['height'] / 2) / video['height']
-                width = geometry['width'] / video['width']
-                height = geometry['height'] / video['height']
-                
-                yolo_annotations.append(f"{class_id} {x_center} {y_center} {width} {height}")
+            for ann in frame_annotations:
+                try:
+                    geometry = json.loads(ann['geometry'])
+                    class_id = class_name_to_id[ann['class_name']]
+                    
+                    if ann['annotation_type'] == 'bbox':
+                        # Validate required keys
+                        if not all(key in geometry for key in ['x', 'y', 'width', 'height']):
+                            logger.warning(f"Skipping invalid bbox annotation {ann['id']}")
+                            continue
+                        
+                        # Convert to YOLO format (normalized center coordinates and dimensions)
+                        x_center = (geometry['x'] + geometry['width'] / 2) / video['width']
+                        y_center = (geometry['y'] + geometry['height'] / 2) / video['height']
+                        width = geometry['width'] / video['width']
+                        height = geometry['height'] / video['height']
+                        
+                        # Validate normalized coordinates
+                        if not (0 <= x_center <= 1 and 0 <= y_center <= 1 and 0 < width <= 1 and 0 < height <= 1):
+                            logger.warning(f"Skipping bbox with invalid normalized coordinates: {ann['id']}")
+                            continue
+                        
+                        yolo_annotations.append(f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}")
+                    # Note: YOLO format typically doesn't support polygons, so we skip them
+                except (json.JSONDecodeError, KeyError, ValueError, ZeroDivisionError) as e:
+                    logger.error(f"Error processing annotation {ann['id']} for YOLO: {e}")
+                    continue
+            
+            yolo_data["frames"][f"frame_{frame_num:06d}"] = yolo_annotations
         
-        yolo_data["frames"][f"frame_{frame_num:06d}"] = yolo_annotations
+        return yolo_data
     
-    return yolo_data
+    except Exception as e:
+        logger.error(f"Error in YOLO export: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate YOLO format")
 
 def get_html_content():
     """Return the HTML content for the frontend"""
