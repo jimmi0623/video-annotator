@@ -2,7 +2,6 @@
 
 A professional web-based video annotation tool built with FastAPI and modern web technologies. Designed for creating precise bounding box and polygon annotations on video frames with export capabilities to industry-standard formats.
 
-![Video Annotation Tool](https://img.shields.io/badge/FastAPI-0.104.1-green) ![Python](https://img.shields.io/badge/Python-3.8+-blue) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ## ✨ Features
 
@@ -249,7 +248,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 📧 Contact
 
-**James Rono** - [Your Email] - [Your LinkedIn]
+**James Rono** - jimmironno@gmail.com - https://www.linkedin.com/in/mijj0623
 
 Project Link: [https://github.com/yourusername/video-annotator](https://github.com/yourusername/video-annotator)
 
