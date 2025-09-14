@@ -7,7 +7,8 @@ import os
 import logging
 from pathlib import Path
 from typing import List, Optional
-from pydantic import BaseSettings, Field, validator
+from pydantic import BaseModel, Field, field_validator
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -69,21 +70,24 @@ class Settings(BaseSettings):
     auto_reload: bool = Field(default=False, env="AUTO_RELOAD")
     enable_cors: bool = Field(default=True, env="ENABLE_CORS")
     
-    @validator('allowed_origins', pre=True)
+    @field_validator('allowed_origins', mode='before')
+    @classmethod
     def parse_origins(cls, v):
         """Parse comma-separated origins from environment variable."""
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(',') if origin.strip()]
         return v
     
-    @validator('supported_formats', pre=True)
+    @field_validator('supported_formats', mode='before')
+    @classmethod
     def parse_formats(cls, v):
         """Parse comma-separated formats from environment variable."""
         if isinstance(v, str):
             return [fmt.strip() for fmt in v.split(',') if fmt.strip()]
         return v
     
-    @validator('log_level')
+    @field_validator('log_level')
+    @classmethod
     def validate_log_level(cls, v):
         """Validate log level."""
         valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
@@ -110,10 +114,11 @@ class Settings(BaseSettings):
         for directory in directories:
             Path(directory).mkdir(parents=True, exist_ok=True)
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False
+    }
 
 
 def setup_logging(settings: Settings) -> logging.Logger:

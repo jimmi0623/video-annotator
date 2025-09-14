@@ -171,7 +171,7 @@ class ResourceManager:
         return duplicates
     
     async def optimize_upload_memory(self, content: bytes) -> Tuple[str, str]:
-        \"\"\"Optimize memory usage during upload by using temporary files for large uploads.\"\"\"
+        """Optimize memory usage during upload by using temporary files for large uploads."""
         temp_file_path = None
         
         try:
@@ -213,7 +213,7 @@ class ResourceManager:
             raise
     
     def track_upload_progress(self, upload_id: str, filename: str, total_size: int):
-        \"\"\"Track upload progress for monitoring.\"\"\""
+        """Track upload progress for monitoring."""
         self._upload_progress[upload_id] = {
             "filename": filename,
             "total_size": total_size,
@@ -222,7 +222,7 @@ class ResourceManager:
         }
     
     def update_upload_progress(self, upload_id: str, bytes_processed: int):
-        \"\"\"Update upload progress.\"\"\""
+        """Update upload progress."""
         if upload_id in self._upload_progress:
             info = self._upload_progress[upload_id]
             info["bytes_processed"] = bytes_processed
@@ -230,7 +230,7 @@ class ResourceManager:
             info["last_update"] = time.time()
     
     def complete_upload(self, upload_id: str, success: bool = True):
-        \"\"\"Mark upload as completed.\"\"\""
+        """Mark upload as completed."""
         if upload_id in self._upload_progress:
             info = self._upload_progress[upload_id]
             info["status"] = "completed" if success else "failed"
@@ -238,15 +238,15 @@ class ResourceManager:
             info["duration"] = info["end_time"] - info["start_time"]
     
     def get_upload_progress(self, upload_id: str) -> Optional[Dict]:
-        \"\"\"Get progress information for an upload.\"\"\""
+        """Get progress information for an upload."""
         return self._upload_progress.get(upload_id)
     
     def get_all_upload_progress(self) -> Dict:
-        \"\"\"Get progress information for all active uploads.\"\"\""
+        """Get progress information for all active uploads."""
         return dict(self._upload_progress)
     
     async def emergency_cleanup(self) -> Dict:
-        \"\"\"Perform emergency cleanup when system resources are low.\"\"\""
+        """Perform emergency cleanup when system resources are low."""
         cleanup_results = {
             "temp_files_removed": 0,
             "memory_freed": 0,
@@ -293,7 +293,7 @@ class ResourceManager:
         return cleanup_results
     
     async def get_resource_stats(self) -> Dict:
-        \"\"\"Get comprehensive resource statistics.\"\"\""
+        """Get comprehensive resource statistics."""
         return {
             "memory": self.get_memory_usage(),
             "disk": await self.get_disk_usage(),
@@ -309,7 +309,7 @@ resource_manager = ResourceManager()
 
 # Background task for periodic cleanup
 async def periodic_cleanup_task():
-    \"\"\"Background task for periodic resource cleanup.\"\"\""
+    """Background task for periodic resource cleanup."""
     while True:
         try:
             # Wait for cleanup interval
@@ -332,7 +332,7 @@ async def periodic_cleanup_task():
 
 
 def start_background_tasks(app):
-    \"\"\"Start background cleanup tasks.\"\"\""
+    """Start background cleanup tasks."""
     @app.on_event("startup")
     async def startup_event():
         logger.info("Starting background resource management tasks")
