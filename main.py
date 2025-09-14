@@ -63,50 +63,191 @@ class VideoInfo(BaseModel):
 
 # Database setup
 def init_database():
-    conn = sqlite3.connect('annotations.db')
-    cursor = conn.cursor()
-    
-    # Videos table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS videos (
-            id TEXT PRIMARY KEY,
-            filename TEXT NOT NULL,
-            file_path TEXT NOT NULL,
-            duration REAL NOT NULL,
-            fps REAL NOT NULL,
-            width INTEGER NOT NULL,
-            height INTEGER NOT NULL,
-            frame_count INTEGER NOT NULL,
-            upload_date TEXT NOT NULL
-        )
-    ''')
-    
-    # Annotations table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS annotations (
-            id TEXT PRIMARY KEY,
-            video_id TEXT NOT NULL,
-            frame_number INTEGER NOT NULL,
-            annotation_type TEXT NOT NULL,
-            class_name TEXT NOT NULL,
-            geometry TEXT NOT NULL,
-            track_id INTEGER,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (video_id) REFERENCES videos (id)
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+    """Initialize the database with tables and indexes"""
+    try:
+        conn = sqlite3.connect('annotations.db')
+        cursor = conn.cursor()
+        
+        # Enable foreign key support
+        cursor.execute('PRAGMA foreign_keys = ON')
+        
+        # Videos table with improved schema
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS videos (
+                id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                file_path TEXT NOT NULL UNIQUE,
+                duration REAL NOT NULL CHECK(duration >= 0),
+                fps REAL NOT NULL CHECK(fps > 0),
+                width INTEGER NOT NULL CHECK(width > 0),
+                height INTEGER NOT NULL CHECK(height > 0),
+                frame_count INTEGER NOT NULL CHECK(frame_count > 0),
+                upload_date TEXT NOT NULL,
+                file_size INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Annotations table with improved schema
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS annotations (
+                id TEXT PRIMARY KEY,
+                video_id TEXT NOT NULL,
+                frame_number INTEGER NOT NULL CHECK(frame_number >= 0),
+                annotation_type TEXT NOT NULL CHECK(annotation_type IN ('bbox', 'polygon')),
+                class_name TEXT NOT NULL,
+                geometry TEXT NOT NULL,
+                track_id INTEGER CHECK(track_id > 0),
+                created_at TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (video_id) REFERENCES videos (id) ON DELETE CASCADE
+            )
+        ''')
+        
+        # Create indexes for better performance
+        indexes = [
+            'CREATE INDEX IF NOT EXISTS idx_videos_filename ON videos(filename)',
+            'CREATE INDEX IF NOT EXISTS idx_videos_upload_date ON videos(upload_date DESC)',
+            'CREATE INDEX IF NOT EXISTS idx_annotations_video_id ON annotations(video_id)',
+            'CREATE INDEX IF NOT EXISTS idx_annotations_frame_number ON annotations(frame_number)',
+            'CREATE INDEX IF NOT EXISTS idx_annotations_video_frame ON annotations(video_id, frame_number)',
+            'CREATE INDEX IF NOT EXISTS idx_annotations_class_name ON annotations(class_name)',
+            'CREATE INDEX IF NOT EXISTS idx_annotations_track_id ON annotations(track_id)',
+            'CREATE INDEX IF NOT EXISTS idx_annotations_type ON annotations(annotation_type)',
+            'CREATE INDEX IF NOT EXISTS idx_annotations_created_at ON annotations(created_at DESC)'
+        ]
+        
+        for index_sql in indexes:
+            cursor.execute(index_sql)
+        
+        # Create a table for application metadata
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS app_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Insert or update schema version
+        cursor.execute('''
+            INSERT OR REPLACE INTO app_metadata (key, value, updated_at)
+            VALUES ('schema_version', '1.1', CURRENT_TIMESTAMP)
+        ''')
+        
+        # Add triggers to update timestamps
+        cursor.execute('''
+            CREATE TRIGGER IF NOT EXISTS update_videos_updated_at
+            AFTER UPDATE ON videos
+            BEGIN
+                UPDATE videos SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+            END
+        ''')
+        
+        cursor.execute('''
+            CREATE TRIGGER IF NOT EXISTS update_annotations_updated_at
+            AFTER UPDATE ON annotations
+            BEGIN
+                UPDATE annotations SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+            END
+        ''')
+        
+        conn.commit()
+        logger.info("Database initialized successfully with indexes and triggers")
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        raise
+    finally:
+        conn.close()
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect('annotations.db')
+    """Database connection context manager with proper configuration"""
+    conn = sqlite3.connect(
+        'annotations.db',
+        timeout=30.0,  # 30 second timeout
+        check_same_thread=False
+    )
     conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA foreign_keys = ON')
+    conn.execute('PRAGMA journal_mode = WAL')  # Better concurrency
+    conn.execute('PRAGMA synchronous = NORMAL')  # Better performance
+    conn.execute('PRAGMA cache_size = -64000')  # 64MB cache
+    
     try:
         yield conn
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Database transaction error: {e}")
+        raise
     finally:
         conn.close()
+
+# Database utility functions
+def get_database_stats():
+    """Get database statistics"""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get video count and total size
+            cursor.execute("SELECT COUNT(*), COALESCE(SUM(file_size), 0) FROM videos")
+            video_count, total_size = cursor.fetchone()
+            
+            # Get annotation count
+            cursor.execute("SELECT COUNT(*) FROM annotations")
+            annotation_count = cursor.fetchone()[0]
+            
+            # Get unique class names
+            cursor.execute("SELECT COUNT(DISTINCT class_name) FROM annotations")
+            unique_classes = cursor.fetchone()[0]
+            
+            # Get schema version
+            cursor.execute("SELECT value FROM app_metadata WHERE key = 'schema_version'")
+            schema_version = cursor.fetchone()
+            schema_version = schema_version[0] if schema_version else "1.0"
+            
+            return {
+                "video_count": video_count,
+                "total_file_size": total_size,
+                "annotation_count": annotation_count,
+                "unique_classes": unique_classes,
+                "schema_version": schema_version
+            }
+    except Exception as e:
+        logger.error(f"Failed to get database stats: {e}")
+        return None
+
+def cleanup_orphaned_files():
+    """Clean up files that exist on disk but not in database"""
+    try:
+        uploads_dir = Path("uploads")
+        if not uploads_dir.exists():
+            return 0
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT file_path FROM videos")
+            db_files = {row[0] for row in cursor.fetchall()}
+        
+        disk_files = list(uploads_dir.glob("*"))
+        orphaned_count = 0
+        
+        for file_path in disk_files:
+            if str(file_path) not in db_files:
+                try:
+                    file_path.unlink()
+                    orphaned_count += 1
+                    logger.info(f"Removed orphaned file: {file_path}")
+                except OSError as e:
+                    logger.error(f"Failed to remove orphaned file {file_path}: {e}")
+        
+        return orphaned_count
+    except Exception as e:
+        logger.error(f"Failed to cleanup orphaned files: {e}")
+        return 0
 
 # Initialize FastAPI app
 app = FastAPI(title="Video Annotation Tool", version="1.0.0")
@@ -239,11 +380,19 @@ async def upload_video(file: UploadFile = File(...)):
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO videos (id, filename, file_path, duration, fps, width, height, frame_count, upload_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (video_id, safe_filename, file_path, duration, fps, width, height, frame_count, datetime.now().isoformat()))
+                INSERT INTO videos (id, filename, file_path, duration, fps, width, height, frame_count, upload_date, file_size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (video_id, safe_filename, file_path, duration, fps, width, height, frame_count, datetime.now().isoformat(), len(content)))
             conn.commit()
-            logger.info(f"Video metadata saved: {video_id}")
+            logger.info(f"Video metadata saved: {video_id} ({len(content)} bytes)")
+    except sqlite3.IntegrityError as e:
+        # Clean up file on database error (e.g., duplicate file path)
+        try:
+            os.remove(file_path)
+        except OSError:
+            pass
+        logger.error(f"Database integrity error: {e}")
+        raise HTTPException(status_code=409, detail="Video with this path already exists")
     except Exception as e:
         # Clean up file on database error
         try:
@@ -266,22 +415,30 @@ async def upload_video(file: UploadFile = File(...)):
 
 @app.get("/api/videos", response_model=List[VideoInfo])
 async def get_videos():
-    """Get all uploaded videos"""
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM videos ORDER BY upload_date DESC")
-        videos = cursor.fetchall()
-        
-        return [VideoInfo(
-            id=video['id'],
-            filename=video['filename'],
-            duration=video['duration'],
-            fps=video['fps'],
-            width=video['width'],
-            height=video['height'],
-            frame_count=video['frame_count'],
-            upload_date=video['upload_date']
-        ) for video in videos]
+    """Get all uploaded videos with improved query performance"""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, filename, duration, fps, width, height, frame_count, upload_date
+                FROM videos 
+                ORDER BY upload_date DESC
+            """)
+            videos = cursor.fetchall()
+            
+            return [VideoInfo(
+                id=video['id'],
+                filename=video['filename'],
+                duration=video['duration'],
+                fps=video['fps'],
+                width=video['width'],
+                height=video['height'],
+                frame_count=video['frame_count'],
+                upload_date=video['upload_date']
+            ) for video in videos]
+    except Exception as e:
+        logger.error(f"Failed to retrieve videos: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve videos")
 
 @app.post("/api/annotations")
 async def create_annotation(annotation: AnnotationCreate):
@@ -479,6 +636,91 @@ async def export_annotations(video_id: str, format: str = "coco"):
     except Exception as e:
         logger.error(f"Failed to export annotations for video {video_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to export annotations")
+
+@app.get("/api/stats")
+async def get_stats():
+    """Get database and application statistics"""
+    stats = get_database_stats()
+    if stats is None:
+        raise HTTPException(status_code=500, detail="Failed to retrieve statistics")
+    
+    return stats
+
+@app.post("/api/cleanup")
+async def cleanup_files():
+    """Clean up orphaned files (admin endpoint)"""
+    try:
+        cleaned_count = cleanup_orphaned_files()
+        logger.info(f"Cleanup completed: removed {cleaned_count} orphaned files")
+        return {
+            "status": "completed",
+            "files_removed": cleaned_count,
+            "message": f"Removed {cleaned_count} orphaned files"
+        }
+    except Exception as e:
+        logger.error(f"Cleanup failed: {e}")
+        raise HTTPException(status_code=500, detail="Cleanup operation failed")
+
+@app.get("/api/videos/{video_id}/stats")
+async def get_video_stats(video_id: str):
+    """Get statistics for a specific video"""
+    # Validate video_id format
+    try:
+        uuid.UUID(video_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid video ID format")
+    
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get video info with file stats
+            cursor.execute("""
+                SELECT id, filename, duration, fps, width, height, frame_count, 
+                       upload_date, file_size, created_at, updated_at
+                FROM videos WHERE id = ?
+            """, (video_id,))
+            video = cursor.fetchone()
+            
+            if not video:
+                raise HTTPException(status_code=404, detail="Video not found")
+            
+            # Get annotation statistics
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_annotations,
+                    COUNT(DISTINCT frame_number) as annotated_frames,
+                    COUNT(DISTINCT class_name) as unique_classes,
+                    COUNT(DISTINCT track_id) as unique_tracks
+                FROM annotations WHERE video_id = ?
+            """, (video_id,))
+            ann_stats = cursor.fetchone()
+            
+            # Get class distribution
+            cursor.execute("""
+                SELECT class_name, COUNT(*) as count
+                FROM annotations 
+                WHERE video_id = ?
+                GROUP BY class_name
+                ORDER BY count DESC
+            """, (video_id,))
+            class_distribution = [{
+                "class_name": row[0],
+                "count": row[1]
+            } for row in cursor.fetchall()]
+            
+            return {
+                "video": dict(video),
+                "annotation_stats": dict(ann_stats),
+                "class_distribution": class_distribution,
+                "completion_percentage": (ann_stats[1] / video['frame_count'] * 100) if video['frame_count'] > 0 else 0
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get video stats for {video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve video statistics")
 
 def export_coco_format(video, annotations):
     """Export in COCO format"""
