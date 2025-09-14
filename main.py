@@ -15,16 +15,15 @@ from contextlib import contextmanager
 import logging
 from pathlib import Path
 
-# Configuration constants
-MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
-ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
-MAX_FILENAME_LENGTH = 255
-MAX_CLASS_NAME_LENGTH = 50
-MAX_FRAME_NUMBER = 999999
+# Import configuration
+from config import settings, logger
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configuration from settings
+MAX_FILE_SIZE = settings.max_file_size
+ALLOWED_VIDEO_EXTENSIONS = set(settings.supported_formats)
+MAX_FILENAME_LENGTH = settings.max_filename_length
+MAX_CLASS_NAME_LENGTH = settings.max_class_name_length
+MAX_FRAME_NUMBER = settings.max_frame_count
 
 # Pydantic Models
 class AnnotationCreate(BaseModel):
@@ -165,16 +164,19 @@ def init_database():
 @contextmanager
 def get_db():
     """Database connection context manager with proper configuration"""
+    # Extract database path from URL (simple SQLite URL parsing)
+    db_path = settings.database_url.replace('sqlite:///', '').replace('sqlite:', '')
+    
     conn = sqlite3.connect(
-        'annotations.db',
-        timeout=30.0,  # 30 second timeout
+        db_path,
+        timeout=settings.database_timeout,
         check_same_thread=False
     )
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
     conn.execute('PRAGMA journal_mode = WAL')  # Better concurrency
     conn.execute('PRAGMA synchronous = NORMAL')  # Better performance
-    conn.execute('PRAGMA cache_size = -64000')  # 64MB cache
+    conn.execute(f'PRAGMA cache_size = -{settings.cache_size_bytes // 1024}')  # Cache from settings
     
     try:
         yield conn
@@ -223,7 +225,7 @@ def get_database_stats():
 def cleanup_orphaned_files():
     """Clean up files that exist on disk but not in database"""
     try:
-        uploads_dir = Path("uploads")
+        uploads_dir = Path(settings.upload_dir)
         if not uploads_dir.exists():
             return 0
         
@@ -250,34 +252,34 @@ def cleanup_orphaned_files():
         return 0
 
 # Initialize FastAPI app
-app = FastAPI(title="Video Annotation Tool", version="1.0.0")
-
-# CORS middleware - Restrict origins in production
-allowed_origins = [
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-    # Add your production domains here
-    # "https://your-domain.com",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["*"],
+app = FastAPI(
+    title=settings.app_name, 
+    version=settings.app_version,
+    debug=settings.debug
 )
 
-# Create directories
-os.makedirs("uploads", exist_ok=True)
-os.makedirs("static", exist_ok=True)
+# CORS middleware - configurable origins
+if settings.enable_cors:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.allowed_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["*"],
+    )
+
+# Create directories from settings
+os.makedirs(settings.upload_dir, exist_ok=True)
+os.makedirs(settings.static_dir, exist_ok=True)
+if settings.temp_dir:
+    os.makedirs(settings.temp_dir, exist_ok=True)
 
 # Initialize database
 init_database()
 
-# Serve static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# Serve static files from configured directories
+app.mount("/static", StaticFiles(directory=settings.static_dir), name="static")
+app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
 
 # Routes
 @app.get("/", response_class=HTMLResponse)
@@ -318,10 +320,10 @@ async def upload_video(file: UploadFile = File(...)):
     # Generate unique ID and sanitize filename
     video_id = str(uuid.uuid4())
     safe_filename = "".join(c for c in file.filename if c.isalnum() or c in '.-_').rstrip()
-    file_path = f"uploads/{video_id}_{safe_filename}"
+    file_path = f"{settings.upload_dir}/{video_id}_{safe_filename}"
     
-    # Ensure uploads directory exists
-    os.makedirs("uploads", exist_ok=True)
+    # Ensure upload directory exists
+    os.makedirs(settings.upload_dir, exist_ok=True)
     
     try:
         with open(file_path, "wb") as buffer:
@@ -366,14 +368,17 @@ async def upload_video(file: UploadFile = File(...)):
             os.remove(file_path)
         except OSError:
             pass
-        raise HTTPException(status_code=400, detail="Video too long (max frames exceeded)")
+        raise HTTPException(status_code=400, detail=f"Video too long (max {MAX_FRAME_NUMBER} frames)")
     
-    if width > 4096 or height > 4096:
+    if width > settings.max_video_width or height > settings.max_video_height:
         try:
             os.remove(file_path)
         except OSError:
             pass
-        raise HTTPException(status_code=400, detail="Video resolution too high (max 4096x4096)")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Video resolution too high (max {settings.max_video_width}x{settings.max_video_height})"
+        )
     
     # Save to database
     try:
@@ -721,6 +726,22 @@ async def get_video_stats(video_id: str):
     except Exception as e:
         logger.error(f"Failed to get video stats for {video_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve video statistics")
+
+@app.get("/api/config")
+async def get_config():
+    """Get public configuration information"""
+    return {
+        "app_name": settings.app_name,
+        "app_version": settings.app_version,
+        "max_file_size_mb": settings.max_file_size_mb,
+        "max_video_width": settings.max_video_width,
+        "max_video_height": settings.max_video_height,
+        "max_frame_count": settings.max_frame_count,
+        "supported_formats": settings.supported_formats,
+        "max_class_name_length": settings.max_class_name_length,
+        "max_filename_length": settings.max_filename_length,
+        "enable_metrics": settings.enable_metrics
+    }
 
 def export_coco_format(video, annotations):
     """Export in COCO format"""
@@ -1915,12 +1936,26 @@ def get_html_content():
 
 # Run the application
 if __name__ == "__main__":
-    print("🎥 Video Annotation Tool by James Rono Starting...")
+    print(f"🎥 {settings.app_name} v{settings.app_version} Starting...")
     print("📊 Features: Bounding Box & Polygon Annotation, Video Tracking, COCO/YOLO Export")
-    print("🌐 Access the application at: http://localhost:8000")
-    print("📁 Videos will be stored in: ./uploads/")
-    print("🗄️  Database: ./annotations.db")
+    print(f"🌐 Access the application at: http://{settings.host}:{settings.port}")
+    print(f"📁 Videos will be stored in: ./{settings.upload_dir}/")
+    print(f"🗄️  Database: {settings.database_url}")
+    if settings.log_file:
+        print(f"📝 Logs will be written to: {settings.log_file}")
+    print(f"🔧 Debug mode: {settings.debug}")
+    print(f"📏 Max file size: {settings.max_file_size_mb}MB")
     print("\n" + "="*60)
     
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+    logger.info(f"Configuration loaded from environment and .env file")
+    
+    uvicorn.run(
+        app, 
+        host=settings.host, 
+        port=settings.port, 
+        log_level=settings.log_level.lower(),
+        reload=settings.auto_reload,
+        workers=settings.workers if not settings.debug else 1
+    )
 
