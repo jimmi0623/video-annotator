@@ -546,11 +546,19 @@ async def upload_video(file: UploadFile = File(...)):
             detail=f"Video resolution too high (max {settings.max_video_width}x{settings.max_video_height})"
         )
     
-    # Generate thumbnails
+    # Generate thumbnails (with error handling to not block upload)
     logger.info(f"Generating thumbnails for video: {safe_filename}")
-    thumbnail = generate_video_thumbnail(file_path, timestamp=1.0, size=(200, 150))
-    preview_thumbnails = generate_multiple_thumbnails(file_path, count=3, size=(150, 100))
-    preview_thumbnails_json = json.dumps(preview_thumbnails) if preview_thumbnails else None
+    thumbnail = None
+    preview_thumbnails_json = None
+    
+    try:
+        thumbnail = generate_video_thumbnail(file_path, timestamp=1.0, size=(200, 150))
+        preview_thumbnails = generate_multiple_thumbnails(file_path, count=3, size=(150, 100))
+        preview_thumbnails_json = json.dumps(preview_thumbnails) if preview_thumbnails else None
+        logger.info(f"Thumbnails generated successfully for {safe_filename}")
+    except Exception as e:
+        logger.warning(f"Failed to generate thumbnails for {safe_filename}: {e}")
+        # Don't fail the upload if thumbnail generation fails
     
     # Save to database
     try:
@@ -596,34 +604,19 @@ async def upload_video(file: UploadFile = File(...)):
         upload_date=datetime.now().isoformat()
     )
 
-@app.get("/api/videos", response_model=List[VideoInfo])
+@app.get("/api/videos")
 async def get_videos():
     """Get all uploaded videos with improved query performance"""
     try:
         with get_db() as conn:
             cursor = conn.cursor()
             
-            # Check which columns exist
-            cursor.execute("PRAGMA table_info(videos)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            # Build query based on available columns
-            base_columns = "id, filename, duration, fps, width, height, frame_count, upload_date"
-            optional_columns = []
-            
-            if 'file_size' in columns:
-                optional_columns.append('file_size')
-            if 'thumbnail' in columns:
-                optional_columns.append('thumbnail')
-            if 'preview_thumbnails' in columns:
-                optional_columns.append('preview_thumbnails')
-                
-            query_columns = base_columns
-            if optional_columns:
-                query_columns += ", " + ", ".join(optional_columns)
-                
-            cursor.execute(f"""
-                SELECT {query_columns}
+            # Simple query first - get core video info
+            cursor.execute("""
+                SELECT id, filename, duration, fps, width, height, frame_count, upload_date,
+                       COALESCE(file_size, 0) as file_size,
+                       thumbnail,
+                       COALESCE(preview_thumbnails, '[]') as preview_thumbnails
                 FROM videos 
                 ORDER BY upload_date DESC
             """)
@@ -631,25 +624,41 @@ async def get_videos():
             
             result = []
             for video in videos:
+                # Handle preview_thumbnails parsing safely
+                preview_thumbnails = []
+                preview_data = video['preview_thumbnails']
+                if preview_data and preview_data != '[]':
+                    try:
+                        preview_thumbnails = json.loads(preview_data)
+                        if not isinstance(preview_thumbnails, list):
+                            preview_thumbnails = []
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"Failed to parse preview_thumbnails for video {video['id']}: {e}")
+                        preview_thumbnails = []
+                
                 video_info = {
                     "id": video['id'],
                     "filename": video['filename'],
-                    "duration": video['duration'],
-                    "fps": video['fps'],
-                    "width": video['width'],
-                    "height": video['height'],
-                    "frame_count": video['frame_count'],
+                    "duration": float(video['duration']),
+                    "fps": float(video['fps']),
+                    "width": int(video['width']),
+                    "height": int(video['height']),
+                    "frame_count": int(video['frame_count']),
                     "upload_date": video['upload_date'],
-                    "file_size": video.get('file_size', 0),
-                    "thumbnail": video.get('thumbnail', None),
-                    "preview_thumbnails": json.loads(video['preview_thumbnails']) if video.get('preview_thumbnails') else []
+                    "file_size": int(video['file_size']),
+                    "thumbnail": video['thumbnail'],
+                    "preview_thumbnails": preview_thumbnails
                 }
                 result.append(video_info)
                 
+            logger.info(f"Returning {len(result)} videos")
             return result
+            
     except Exception as e:
         logger.error(f"Failed to retrieve videos: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve videos")
+        import traceback
+        logger.error(f"Videos retrieval traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve videos: {str(e)}")
 
 @app.get("/api/videos/{video_id}/thumbnail")
 async def get_video_thumbnail(video_id: str, timestamp: float = 1.0):
@@ -2161,6 +2170,7 @@ def get_html_content():
             }
 
             async function uploadVideo(file) {
+                console.log('Starting upload for file:', file.name);
                 const formData = new FormData();
                 formData.append('file', file);
 
@@ -2172,32 +2182,49 @@ def get_html_content():
                         body: formData
                     });
 
+                    console.log('Upload response status:', response.status);
+                    
                     if (response.ok) {
                         const videoInfo = await response.json();
+                        console.log('Upload successful, video info:', videoInfo);
                         showStatus('Video uploaded successfully!', 'success');
-                        loadVideo(videoInfo);
-                        loadVideos();
+                        
+                        // Load video if successful and refresh list
+                        await loadVideos();
+                        loadVideo(videoInfo.id);  // Use the ID instead of the whole object
                     } else {
-                        throw new Error('Upload failed');
+                        const errorText = await response.text();
+                        console.error('Upload failed with status:', response.status, errorText);
+                        throw new Error(`Upload failed: ${response.status} ${errorText}`);
                     }
                 } catch (error) {
+                    console.error('Upload error:', error);
                     showStatus('Upload failed: ' + error.message, 'error');
                 }
             }
 
             async function loadVideos() {
                 try {
+                    console.log('Loading videos...');
                     const response = await fetch('/api/videos');
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    
                     const videos = await response.json();
+                    console.log('Loaded videos:', videos.length, videos);
                     
                     const container = document.getElementById('videos-container');
                     const videoList = document.getElementById('video-list');
 
-                    if (videos.length === 0) {
+                    if (!videos || videos.length === 0) {
+                        console.log('No videos found');
                         videoList.style.display = 'none';
                         return;
                     }
 
+                    console.log('Displaying video list');
                     videoList.style.display = 'block';
                     container.innerHTML = '';
 
@@ -2219,8 +2246,9 @@ def get_html_content():
                                 ).join('')}
                             </div>` : '';
                         
-                        // Calculate file size display
-                        const fileSizeMB = video.file_size ? (video.file_size / (1024 * 1024)).toFixed(1) : 'Unknown';
+                        // Calculate file size display safely
+                        const fileSizeMB = (video.file_size && video.file_size > 0) ? 
+                            (video.file_size / (1024 * 1024)).toFixed(1) : 'Unknown';
                         
                         videoItem.innerHTML = `
                             ${thumbnailHtml}
@@ -2270,7 +2298,8 @@ def get_html_content():
                         container.appendChild(videoItem);
                     });
                 } catch (error) {
-                    showStatus('Failed to load videos', 'error');
+                    console.error('Failed to load videos:', error);
+                    showStatus('Failed to load videos: ' + error.message, 'error');
                 }
             }
             
