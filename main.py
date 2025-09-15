@@ -15,10 +15,140 @@ import sqlite3
 from contextlib import contextmanager
 import logging
 from pathlib import Path
+import base64
+import io
+
+# Try to import PIL with fallback
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    Image = None
+    print("Warning: PIL/Pillow not available - thumbnails will be disabled")
 
 # Import configuration and resource management
 from config import settings, logger
 from resource_manager import resource_manager, start_background_tasks
+
+# Thumbnail generation utilities
+def generate_video_thumbnail(video_path: str, timestamp: float = 1.0, size: tuple = (200, 150)) -> str:
+    """Generate a thumbnail from video at specified timestamp and return as base64"""
+    if not PIL_AVAILABLE:
+        logger.warning("PIL not available - cannot generate thumbnails")
+        return None
+        
+    try:
+        logger.info(f"Generating thumbnail for {video_path} at {timestamp}s")
+        
+        # Check if file exists
+        if not os.path.exists(video_path):
+            logger.error(f"Video file does not exist: {video_path}")
+            return None
+            
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logger.error(f"Could not open video file: {video_path}")
+            return None
+            
+        # Get video properties for better frame selection
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = frame_count / fps if fps > 0 else 0
+        
+        # Ensure timestamp is within video duration
+        if duration > 0:
+            timestamp = min(timestamp, duration - 0.1)  # Stay within bounds
+            
+        # Set the position to the desired timestamp
+        cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
+        
+        ret, frame = cap.read()
+        if not ret:
+            # Try a different timestamp if the first fails
+            logger.warning(f"Could not read frame at {timestamp}s, trying 10% into video")
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(1, int(frame_count * 0.1)))
+            ret, frame = cap.read()
+            
+        cap.release()
+        
+        if not ret or frame is None:
+            logger.error(f"Could not read any frame from video: {video_path}")
+            return None
+            
+        # Ensure frame has valid dimensions
+        if frame.shape[0] == 0 or frame.shape[1] == 0:
+            logger.error(f"Invalid frame dimensions: {frame.shape}")
+            return None
+            
+        # Convert BGR to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Create PIL Image and resize
+        pil_image = Image.fromarray(frame_rgb)
+        
+        # Calculate proper aspect ratio
+        original_width, original_height = pil_image.size
+        target_width, target_height = size
+        
+        # Calculate scaling to maintain aspect ratio
+        width_ratio = target_width / original_width
+        height_ratio = target_height / original_height
+        scale_ratio = min(width_ratio, height_ratio)
+        
+        new_width = int(original_width * scale_ratio)
+        new_height = int(original_height * scale_ratio)
+        
+        pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        
+        # Convert to base64
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format='JPEG', quality=85, optimize=True)
+        img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        
+        logger.info(f"Successfully generated thumbnail for {video_path} ({len(img_base64)} bytes)")
+        return f"data:image/jpeg;base64,{img_base64}"
+        
+    except Exception as e:
+        logger.error(f"Error generating thumbnail for {video_path}: {e}")
+        import traceback
+        logger.error(f"Thumbnail generation traceback: {traceback.format_exc()}")
+        return None
+
+def generate_multiple_thumbnails(video_path: str, count: int = 3, size: tuple = (150, 100)) -> List[str]:
+    """Generate multiple thumbnails from different parts of the video"""
+    if not PIL_AVAILABLE:
+        return []
+        
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return []
+            
+        # Get video duration
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = frame_count / fps if fps > 0 else 0
+        
+        cap.release()
+        
+        if duration <= 0:
+            return []
+            
+        # Calculate timestamps for thumbnails
+        thumbnails = []
+        for i in range(count):
+            # Skip very beginning and end, distribute evenly
+            timestamp = (duration * (i + 1)) / (count + 1)
+            thumbnail = generate_video_thumbnail(video_path, timestamp, size)
+            if thumbnail:
+                thumbnails.append(thumbnail)
+                
+        return thumbnails
+        
+    except Exception as e:
+        logger.error(f"Error generating multiple thumbnails for {video_path}: {e}")
+        return []
 
 # Configuration from settings
 MAX_FILE_SIZE = settings.max_file_size
@@ -85,6 +215,8 @@ def init_database():
                 frame_count INTEGER NOT NULL CHECK(frame_count > 0),
                 upload_date TEXT NOT NULL,
                 file_size INTEGER DEFAULT 0,
+                thumbnail TEXT,
+                preview_thumbnails TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
@@ -153,6 +285,18 @@ def init_database():
                 UPDATE annotations SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
             END
         ''')
+        
+        # Add thumbnail columns if they don't exist (migration)
+        cursor.execute("PRAGMA table_info(videos)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        if 'thumbnail' not in columns:
+            cursor.execute('ALTER TABLE videos ADD COLUMN thumbnail TEXT')
+            logger.info("Added thumbnail column to videos table")
+            
+        if 'preview_thumbnails' not in columns:
+            cursor.execute('ALTER TABLE videos ADD COLUMN preview_thumbnails TEXT')
+            logger.info("Added preview_thumbnails column to videos table")
         
         conn.commit()
         logger.info("Database initialized successfully with indexes and triggers")
@@ -402,16 +546,22 @@ async def upload_video(file: UploadFile = File(...)):
             detail=f"Video resolution too high (max {settings.max_video_width}x{settings.max_video_height})"
         )
     
+    # Generate thumbnails
+    logger.info(f"Generating thumbnails for video: {safe_filename}")
+    thumbnail = generate_video_thumbnail(file_path, timestamp=1.0, size=(200, 150))
+    preview_thumbnails = generate_multiple_thumbnails(file_path, count=3, size=(150, 100))
+    preview_thumbnails_json = json.dumps(preview_thumbnails) if preview_thumbnails else None
+    
     # Save to database
     try:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO videos (id, filename, file_path, duration, fps, width, height, frame_count, upload_date, file_size)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (video_id, safe_filename, file_path, duration, fps, width, height, frame_count, datetime.now().isoformat(), len(content)))
+                INSERT INTO videos (id, filename, file_path, duration, fps, width, height, frame_count, upload_date, file_size, thumbnail, preview_thumbnails)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (video_id, safe_filename, file_path, duration, fps, width, height, frame_count, datetime.now().isoformat(), len(content), thumbnail, preview_thumbnails_json))
             conn.commit()
-            logger.info(f"Video metadata saved: {video_id} ({len(content)} bytes)")
+            logger.info(f"Video metadata and thumbnails saved: {video_id} ({len(content)} bytes)")
             
             # Mark upload as successful
             resource_manager.complete_upload(upload_id, success=True)
@@ -452,26 +602,134 @@ async def get_videos():
     try:
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, filename, duration, fps, width, height, frame_count, upload_date
+            
+            # Check which columns exist
+            cursor.execute("PRAGMA table_info(videos)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            # Build query based on available columns
+            base_columns = "id, filename, duration, fps, width, height, frame_count, upload_date"
+            optional_columns = []
+            
+            if 'file_size' in columns:
+                optional_columns.append('file_size')
+            if 'thumbnail' in columns:
+                optional_columns.append('thumbnail')
+            if 'preview_thumbnails' in columns:
+                optional_columns.append('preview_thumbnails')
+                
+            query_columns = base_columns
+            if optional_columns:
+                query_columns += ", " + ", ".join(optional_columns)
+                
+            cursor.execute(f"""
+                SELECT {query_columns}
                 FROM videos 
                 ORDER BY upload_date DESC
             """)
             videos = cursor.fetchall()
             
-            return [VideoInfo(
-                id=video['id'],
-                filename=video['filename'],
-                duration=video['duration'],
-                fps=video['fps'],
-                width=video['width'],
-                height=video['height'],
-                frame_count=video['frame_count'],
-                upload_date=video['upload_date']
-            ) for video in videos]
+            result = []
+            for video in videos:
+                video_info = {
+                    "id": video['id'],
+                    "filename": video['filename'],
+                    "duration": video['duration'],
+                    "fps": video['fps'],
+                    "width": video['width'],
+                    "height": video['height'],
+                    "frame_count": video['frame_count'],
+                    "upload_date": video['upload_date'],
+                    "file_size": video.get('file_size', 0),
+                    "thumbnail": video.get('thumbnail', None),
+                    "preview_thumbnails": json.loads(video['preview_thumbnails']) if video.get('preview_thumbnails') else []
+                }
+                result.append(video_info)
+                
+            return result
     except Exception as e:
         logger.error(f"Failed to retrieve videos: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve videos")
+
+@app.get("/api/videos/{video_id}/thumbnail")
+async def get_video_thumbnail(video_id: str, timestamp: float = 1.0):
+    """Generate a thumbnail for a specific video at a given timestamp"""
+    # Validate video_id format
+    try:
+        uuid.UUID(video_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid video ID format")
+    
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT file_path FROM videos WHERE id = ?", (video_id,))
+            video = cursor.fetchone()
+            
+            if not video:
+                raise HTTPException(status_code=404, detail="Video not found")
+            
+            file_path = video['file_path']
+            if not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="Video file not found")
+            
+            thumbnail = generate_video_thumbnail(file_path, timestamp)
+            if not thumbnail:
+                raise HTTPException(status_code=500, detail="Failed to generate thumbnail")
+            
+            return {"thumbnail": thumbnail}
+            
+    except Exception as e:
+        logger.error(f"Error generating thumbnail for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate thumbnail")
+
+@app.post("/api/videos/{video_id}/regenerate-thumbnails")
+async def regenerate_video_thumbnails(video_id: str):
+    """Regenerate thumbnails for an existing video"""
+    # Validate video_id format
+    try:
+        uuid.UUID(video_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid video ID format")
+    
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT file_path FROM videos WHERE id = ?", (video_id,))
+            video = cursor.fetchone()
+            
+            if not video:
+                raise HTTPException(status_code=404, detail="Video not found")
+            
+            file_path = video['file_path']
+            if not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail="Video file not found")
+            
+            # Generate new thumbnails
+            thumbnail = generate_video_thumbnail(file_path, timestamp=1.0, size=(200, 150))
+            preview_thumbnails = generate_multiple_thumbnails(file_path, count=3, size=(150, 100))
+            preview_thumbnails_json = json.dumps(preview_thumbnails) if preview_thumbnails else None
+            
+            # Update database
+            cursor.execute("""
+                UPDATE videos 
+                SET thumbnail = ?, preview_thumbnails = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (thumbnail, preview_thumbnails_json, video_id))
+            
+            conn.commit()
+            
+            logger.info(f"Regenerated thumbnails for video {video_id}")
+            
+            return {
+                "message": "Thumbnails regenerated successfully",
+                "thumbnail": thumbnail,
+                "preview_count": len(preview_thumbnails) if preview_thumbnails else 0
+            }
+            
+    except Exception as e:
+        logger.error(f"Error regenerating thumbnails for video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to regenerate thumbnails")
 
 @app.delete("/api/videos/{video_id}")
 async def delete_video(video_id: str):
@@ -1485,8 +1743,8 @@ def get_html_content():
             
             .video-item {
                 display: flex;
-                justify-content: space-between;
                 align-items: center;
+                gap: 15px;
                 padding: 15px;
                 border: 1px solid var(--border-color);
                 border-radius: 10px;
@@ -1505,14 +1763,99 @@ def get_html_content():
                 margin-bottom: 0;
             }
             
+            .video-thumbnail {
+                width: 120px;
+                height: 80px;
+                border-radius: 8px;
+                object-fit: cover;
+                background: var(--bg-primary);
+                border: 2px solid var(--border-color);
+                flex-shrink: 0;
+            }
+            
+            .video-thumbnail.loading {
+                background: linear-gradient(90deg, var(--bg-primary) 25%, var(--bg-secondary) 50%, var(--bg-primary) 75%);
+                background-size: 200% 100%;
+                animation: loading 1.5s infinite;
+            }
+            
+            .video-thumbnail-fallback {
+                width: 120px;
+                height: 80px;
+                border-radius: 8px;
+                background: var(--bg-secondary);
+                border: 2px solid var(--border-color);
+                flex-shrink: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 24px;
+                color: var(--text-secondary);
+                cursor: pointer;
+            }
+            
+            @keyframes loading {
+                0% { background-position: 200% 0; }
+                100% { background-position: -200% 0; }
+            }
+            
+            .video-info {
+                flex: 1;
+                min-width: 0;
+            }
+            
             .video-info h3 {
                 color: var(--accent-color);
                 margin-bottom: 5px;
+                font-size: 16px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
             
             .video-meta {
                 color: var(--text-secondary);
                 font-size: 14px;
+                margin-bottom: 8px;
+            }
+            
+            .video-stats {
+                display: flex;
+                gap: 15px;
+                font-size: 12px;
+                color: var(--text-secondary);
+            }
+            
+            .video-stat {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+            }
+            
+            .preview-thumbnails {
+                display: none;
+                position: absolute;
+                top: -10px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: var(--glass-bg);
+                padding: 10px;
+                border-radius: 8px;
+                box-shadow: 0 4px 20px var(--shadow-medium);
+                z-index: 100;
+                gap: 5px;
+            }
+            
+            .video-item:hover .preview-thumbnails {
+                display: flex;
+            }
+            
+            .preview-thumbnail {
+                width: 60px;
+                height: 40px;
+                border-radius: 4px;
+                object-fit: cover;
+                border: 1px solid var(--border-color);
             }
             
             .video-actions {
@@ -1861,25 +2204,92 @@ def get_html_content():
                     videos.forEach(video => {
                         const videoItem = document.createElement('div');
                         videoItem.className = 'video-item';
+                        
+                        // Create thumbnail element
+                        const thumbnailHtml = video.thumbnail ? 
+                            `<img src="${video.thumbnail}" alt="Video thumbnail" class="video-thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">` +
+                            `<div class="video-thumbnail-fallback" style="display: none;">📹</div>` :
+                            `<div class="video-thumbnail-fallback">📹</div>`;
+                        
+                        // Create preview thumbnails for hover
+                        const previewHtml = video.preview_thumbnails && video.preview_thumbnails.length > 0 ?
+                            `<div class="preview-thumbnails">
+                                ${video.preview_thumbnails.map(thumb => 
+                                    `<img src="${thumb}" alt="Preview" class="preview-thumbnail">`
+                                ).join('')}
+                            </div>` : '';
+                        
+                        // Calculate file size display
+                        const fileSizeMB = video.file_size ? (video.file_size / (1024 * 1024)).toFixed(1) : 'Unknown';
+                        
                         videoItem.innerHTML = `
+                            ${thumbnailHtml}
                             <div class="video-info">
-                                <h3>${video.filename}</h3>
+                                <h3 title="${video.filename}">${video.filename}</h3>
                                 <div class="video-meta">
-                                    Duration: ${formatTime(video.duration)} | 
-                                    FPS: ${video.fps.toFixed(1)} | 
-                                    Resolution: ${video.width}×${video.height}
+                                    Duration: ${formatTime(video.duration)} | Resolution: ${video.width}×${video.height}
+                                </div>
+                                <div class="video-stats">
+                                    <div class="video-stat">
+                                        <span>📊</span>
+                                        <span>${video.fps.toFixed(1)} FPS</span>
+                                    </div>
+                                    <div class="video-stat">
+                                        <span>🎞️</span>
+                                        <span>${video.frame_count.toLocaleString()} frames</span>
+                                    </div>
+                                    <div class="video-stat">
+                                        <span>💾</span>
+                                        <span>${fileSizeMB} MB</span>
+                                    </div>
                                 </div>
                             </div>
                             <div class="video-actions">
                                 <button onclick="loadVideo('${video.id}')">Load Video</button>
-                                <button class="delete-btn" onclick="deleteVideo('${video.id}', '${video.filename}')" 
-                                        style="margin-left: 10px;">Delete</button>
+                                <button class="delete-btn" onclick="deleteVideo('${video.id}', '${video.filename}')">
+                                    Delete
+                                </button>
                             </div>
+                            ${previewHtml}
                         `;
+                        
+                        // Add click handler to thumbnail for quick preview
+                        const thumbnail = videoItem.querySelector('.video-thumbnail, .video-thumbnail-fallback');
+                        if (thumbnail) {
+                            thumbnail.style.cursor = 'pointer';
+                            thumbnail.addEventListener('click', () => {
+                                loadVideo(video.id);
+                            });
+                        }
+                        
+                        // If no thumbnail exists, try to generate one
+                        if (!video.thumbnail) {
+                            generateThumbnailForVideo(video.id, videoItem);
+                        }
+                        
                         container.appendChild(videoItem);
                     });
                 } catch (error) {
                     showStatus('Failed to load videos', 'error');
+                }
+            }
+            
+            async function generateThumbnailForVideo(videoId, videoItem) {
+                try {
+                    const response = await fetch(`/api/videos/${videoId}/regenerate-thumbnails`, {
+                        method: 'POST'
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        // Update the thumbnail in the video item
+                        const fallback = videoItem.querySelector('.video-thumbnail-fallback');
+                        if (fallback && result.thumbnail) {
+                            fallback.outerHTML = `<img src="${result.thumbnail}" alt="Video thumbnail" class="video-thumbnail">`;
+                        }
+                    }
+                } catch (error) {
+                    console.log(`Could not generate thumbnail for video ${videoId}:`, error);
                 }
             }
             
