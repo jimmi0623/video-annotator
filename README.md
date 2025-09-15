@@ -70,6 +70,14 @@ A professional web-based video annotation tool built with FastAPI and modern web
 2. Supported formats: MP4, AVI, MOV, MKV
 3. Video metadata is automatically extracted and stored
 
+### Managing Videos
+- **Load Video**: Click "Load Video" to open a video for annotation
+- **Delete Video**: Click "Delete" to permanently remove a video
+  - Deletes the video file from storage
+  - Removes all associated annotations
+  - Confirms deletion with a warning dialog
+  - Updates the video list automatically
+
 ### Creating Annotations
 
 #### Bounding Boxes
@@ -144,6 +152,7 @@ CREATE TABLE annotations (
 ### Video Endpoints
 - `POST /api/upload-video` - Upload a new video
 - `GET /api/videos` - List all uploaded videos
+- `DELETE /api/videos/{video_id}` - Delete a video and all associated data
 
 ### Annotation Endpoints
 - `POST /api/annotations` - Create new annotation

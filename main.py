@@ -473,6 +473,71 @@ async def get_videos():
         logger.error(f"Failed to retrieve videos: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve videos")
 
+@app.delete("/api/videos/{video_id}")
+async def delete_video(video_id: str):
+    """Delete a video and all associated annotations and files"""
+    # Validate video_id format
+    try:
+        uuid.UUID(video_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid video ID format")
+    
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get video info before deletion to access file path
+            cursor.execute("SELECT file_path, filename FROM videos WHERE id = ?", (video_id,))
+            video = cursor.fetchone()
+            
+            if not video:
+                raise HTTPException(status_code=404, detail="Video not found")
+            
+            file_path = video['file_path']
+            filename = video['filename']
+            
+            # Delete associated annotations first (CASCADE should handle this, but let's be explicit)
+            cursor.execute("DELETE FROM annotations WHERE video_id = ?", (video_id,))
+            deleted_annotations = cursor.rowcount
+            
+            # Delete the video record
+            cursor.execute("DELETE FROM videos WHERE id = ?", (video_id,))
+            
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Video not found")
+            
+            conn.commit()
+            
+            # Delete the physical file
+            file_deleted = False
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    file_deleted = True
+                    logger.info(f"Deleted video file: {file_path}")
+                else:
+                    logger.warning(f"Video file not found for deletion: {file_path}")
+            except OSError as e:
+                logger.error(f"Failed to delete video file {file_path}: {e}")
+                # Don't raise an exception here as the database record is already deleted
+            
+            logger.info(f"Video deleted: {video_id} ({filename}) with {deleted_annotations} annotations")
+            
+            return {
+                "status": "deleted",
+                "video_id": video_id,
+                "filename": filename,
+                "annotations_deleted": deleted_annotations,
+                "file_deleted": file_deleted,
+                "message": f"Video '{filename}' and {deleted_annotations} annotations deleted successfully"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete video {video_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete video")
+
 @app.post("/api/annotations")
 async def create_annotation(annotation: AnnotationCreate):
     """Create a new annotation"""
@@ -1313,6 +1378,16 @@ def get_html_content():
                 font-size: 14px;
             }
             
+            .video-actions {
+                display: flex;
+                gap: 10px;
+                align-items: center;
+            }
+            
+            .video-actions button {
+                white-space: nowrap;
+            }
+            
             @media (max-width: 1024px) {
                 .main-content {
                     grid-template-columns: 1fr;
@@ -1546,7 +1621,11 @@ def get_html_content():
                                     Resolution: ${video.width}×${video.height}
                                 </div>
                             </div>
-                            <button onclick="loadVideo('${video.id}')">Load Video</button>
+                            <div class="video-actions">
+                                <button onclick="loadVideo('${video.id}')">Load Video</button>
+                                <button class="delete-btn" onclick="deleteVideo('${video.id}', '${video.filename}')" 
+                                        style="margin-left: 10px;">Delete</button>
+                            </div>
                         `;
                         container.appendChild(videoItem);
                     });
@@ -1591,6 +1670,52 @@ def get_html_content():
 
                 } catch (error) {
                     showStatus('Failed to load video: ' + error.message, 'error');
+                }
+            }
+            
+            async function deleteVideo(videoId, filename) {
+                // Confirm deletion
+                if (!confirm(`Are you sure you want to delete the video "${filename}"?\n\nThis will permanently delete:\n- The video file\n- All annotations for this video\n\nThis action cannot be undone.`)) {
+                    return;
+                }
+                
+                try {
+                    showStatus('Deleting video...', 'success');
+                    
+                    const response = await fetch(`/api/videos/${videoId}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        showStatus(`Video "${filename}" deleted successfully!`, 'success');
+                        
+                        // If the deleted video is currently loaded, clear the interface
+                        if (currentVideo && currentVideo.id === videoId) {
+                            currentVideo = null;
+                            const videoPlayer = document.getElementById('video-player');
+                            const noVideo = document.getElementById('no-video');
+                            
+                            videoPlayer.style.display = 'none';
+                            noVideo.style.display = 'block';
+                            
+                            document.getElementById('main-content').style.display = 'none';
+                            document.getElementById('export-section').style.display = 'none';
+                            
+                            // Clear annotations list
+                            const annotationsList = document.getElementById('annotations-list');
+                            annotationsList.innerHTML = '<p style="color: #999; text-align: center;">No annotations</p>';
+                        }
+                        
+                        // Refresh the video list
+                        await loadVideos();
+                        
+                    } else {
+                        const errorData = await response.json();
+                        throw new Error(errorData.detail || 'Delete failed');
+                    }
+                } catch (error) {
+                    showStatus('Failed to delete video: ' + error.message, 'error');
                 }
             }
 
