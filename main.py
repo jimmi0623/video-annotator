@@ -150,6 +150,50 @@ def generate_multiple_thumbnails(video_path: str, count: int = 3, size: tuple = 
         logger.error(f"Error generating multiple thumbnails for {video_path}: {e}")
         return []
 
+# Annotation interpolation and tracking utilities
+def interpolate_bbox(bbox1: dict, bbox2: dict, frame1: int, frame2: int, target_frame: int) -> dict:
+    """Linear interpolation between two bounding boxes"""
+    if frame1 == frame2:
+        return bbox1.copy()
+        
+    # Calculate interpolation ratio
+    ratio = (target_frame - frame1) / (frame2 - frame1)
+    ratio = max(0, min(1, ratio))  # Clamp between 0 and 1
+    
+    # Interpolate each coordinate
+    interpolated = {
+        'x': bbox1['x'] + (bbox2['x'] - bbox1['x']) * ratio,
+        'y': bbox1['y'] + (bbox2['y'] - bbox1['y']) * ratio,
+        'width': bbox1['width'] + (bbox2['width'] - bbox1['width']) * ratio,
+        'height': bbox1['height'] + (bbox2['height'] - bbox1['height']) * ratio
+    }
+    
+    return interpolated
+
+def interpolate_polygon(poly1: dict, poly2: dict, frame1: int, frame2: int, target_frame: int) -> dict:
+    """Linear interpolation between two polygons"""
+    if frame1 == frame2:
+        return poly1.copy()
+    
+    points1 = poly1.get('points', [])
+    points2 = poly2.get('points', [])
+    
+    # Only interpolate if both polygons have the same number of points
+    if len(points1) != len(points2):
+        return poly1.copy()  # Return first polygon if they don't match
+    
+    ratio = (target_frame - frame1) / (frame2 - frame1)
+    ratio = max(0, min(1, ratio))
+    
+    interpolated_points = []
+    for p1, p2 in zip(points1, points2):
+        interpolated_points.append({
+            'x': p1['x'] + (p2['x'] - p1['x']) * ratio,
+            'y': p1['y'] + (p2['y'] - p1['y']) * ratio
+        })
+    
+    return {'points': interpolated_points}
+
 # Configuration from settings
 MAX_FILE_SIZE = settings.max_file_size
 ALLOWED_VIDEO_EXTENSIONS = set(settings.supported_formats)
@@ -181,6 +225,17 @@ class AnnotationUpdate(BaseModel):
         if v and not v.strip():
             raise ValueError('Class name cannot be empty or whitespace')
         return v.strip().lower() if v else None
+
+class InterpolationRequest(BaseModel):
+    start_frame: int = Field(..., ge=0)
+    end_frame: int = Field(..., ge=0)
+    track_id: Optional[int] = Field(None, ge=1)
+    interpolation_type: str = Field(default="linear", pattern='^(linear|bezier|auto)$')
+    
+class TrackingRequest(BaseModel):
+    annotation_id: str
+    target_frames: List[int] = Field(..., min_items=1)
+    tracking_method: str = Field(default="optical_flow", pattern='^(optical_flow|template_matching|deep_learning)$')
 
 class VideoInfo(BaseModel):
     id: str
@@ -957,6 +1012,108 @@ async def delete_annotation(annotation_id: str):
         raise HTTPException(status_code=500, detail="Failed to delete annotation")
     
     return {"status": "deleted"}
+
+@app.post("/api/annotations/interpolate")
+async def interpolate_annotations(request: InterpolationRequest):
+    """Generate interpolated annotations between keyframes"""
+    try:
+        # Validate frame range
+        if request.start_frame >= request.end_frame:
+            raise HTTPException(status_code=400, detail="Start frame must be before end frame")
+        
+        if request.end_frame - request.start_frame < 2:
+            raise HTTPException(status_code=400, detail="Need at least one frame between keyframes")
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Find annotations with the same track_id on start and end frames
+            cursor.execute("""
+                SELECT a1.video_id, a1.annotation_type, a1.class_name, a1.geometry as start_geom,
+                       a2.geometry as end_geom
+                FROM annotations a1
+                JOIN annotations a2 ON a1.video_id = a2.video_id 
+                                    AND a1.track_id = a2.track_id
+                                    AND a1.class_name = a2.class_name
+                                    AND a1.annotation_type = a2.annotation_type
+                WHERE a1.frame_number = ? AND a2.frame_number = ?
+                  AND a1.track_id = ?
+            """, (request.start_frame, request.end_frame, request.track_id))
+            
+            keyframe_data = cursor.fetchone()
+            if not keyframe_data:
+                raise HTTPException(
+                    status_code=404, 
+                    detail="Could not find matching annotations on both keyframes with the same track_id"
+                )
+            
+            video_id = keyframe_data['video_id']
+            annotation_type = keyframe_data['annotation_type']
+            class_name = keyframe_data['class_name']
+            start_geometry = json.loads(keyframe_data['start_geom'])
+            end_geometry = json.loads(keyframe_data['end_geom'])
+            
+            # Generate interpolated annotations
+            created_annotations = []
+            
+            for frame_num in range(request.start_frame + 1, request.end_frame):
+                # Check if annotation already exists for this frame
+                cursor.execute("""
+                    SELECT id FROM annotations 
+                    WHERE video_id = ? AND frame_number = ? AND track_id = ?
+                """, (video_id, frame_num, request.track_id))
+                
+                if cursor.fetchone():
+                    continue  # Skip if annotation already exists
+                
+                # Interpolate geometry
+                if annotation_type == 'bbox':
+                    interpolated_geometry = interpolate_bbox(
+                        start_geometry, end_geometry, 
+                        request.start_frame, request.end_frame, frame_num
+                    )
+                elif annotation_type == 'polygon':
+                    interpolated_geometry = interpolate_polygon(
+                        start_geometry, end_geometry,
+                        request.start_frame, request.end_frame, frame_num
+                    )
+                else:
+                    continue
+                
+                # Create the interpolated annotation
+                annotation_id = str(uuid.uuid4())
+                cursor.execute("""
+                    INSERT INTO annotations 
+                    (id, video_id, frame_number, annotation_type, class_name, geometry, track_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    annotation_id, video_id, frame_num, annotation_type, class_name,
+                    json.dumps(interpolated_geometry), request.track_id, datetime.now().isoformat()
+                ))
+                
+                created_annotations.append({
+                    'id': annotation_id,
+                    'frame_number': frame_num,
+                    'geometry': interpolated_geometry
+                })
+            
+            conn.commit()
+            logger.info(f"Created {len(created_annotations)} interpolated annotations for track {request.track_id}")
+            
+            return {
+                'status': 'success',
+                'interpolated_count': len(created_annotations),
+                'start_frame': request.start_frame,
+                'end_frame': request.end_frame,
+                'track_id': request.track_id,
+                'created_annotations': created_annotations
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Interpolation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Interpolation failed: {str(e)}")
 
 @app.get("/api/export/{video_id}")
 async def export_annotations(video_id: str, format: str = "coco"):
@@ -2001,6 +2158,42 @@ def get_html_content():
                         Clear Frame Annotations
                     </button>
 
+                    <!-- Interpolation Controls -->
+                    <div class="interpolation-panel" style="margin-top: 20px; padding: 15px; background: var(--bg-secondary); border-radius: 8px; border: 1px solid var(--border-color);">
+                        <h4 style="margin-bottom: 15px; color: var(--accent-color);">🎯 Object Tracking & Interpolation</h4>
+                        
+                        <div class="form-group">
+                            <label for="interp-track-id">Track ID for Interpolation:</label>
+                            <input type="number" id="interp-track-id" placeholder="Enter track ID" min="1">
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                            <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                <label for="start-frame">Start Frame:</label>
+                                <input type="number" id="start-frame" placeholder="0" min="0">
+                            </div>
+                            <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                                <label for="end-frame">End Frame:</label>
+                                <input type="number" id="end-frame" placeholder="100" min="0">
+                            </div>
+                        </div>
+                        
+                        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                            <button onclick="setKeyframe('start')" style="flex: 1; background: var(--success-color); font-size: 12px;">
+                                📍 Set Start Keyframe
+                            </button>
+                            <button onclick="setKeyframe('end')" style="flex: 1; background: var(--warning-color); font-size: 12px;">
+                                📍 Set End Keyframe
+                            </button>
+                        </div>
+                        
+                        <button onclick="performInterpolation()" style="width: 100%; background: linear-gradient(135deg, var(--accent-color), #5b4fcf); font-size: 14px;">
+                            ✨ Interpolate Between Keyframes
+                        </button>
+                        
+                        <div id="interpolation-status" style="margin-top: 10px; font-size: 12px; color: var(--text-secondary);"></div>
+                    </div>
+                    
                     <h4>Current Frame Annotations</h4>
                     <div class="annotations-list" id="annotations-list">
                         <p style="color: #999; text-align: center;">No annotations</p>
@@ -2968,6 +3161,135 @@ def get_html_content():
                     statusDiv.classList.remove('show');
                 }, 3000);
             }
+            
+            // Interpolation and tracking functions
+            function setKeyframe(type) {
+                const videoPlayer = document.getElementById('video-player');
+                if (!currentVideo || !videoPlayer) {
+                    showStatus('No video loaded', 'error');
+                    return;
+                }
+                
+                const currentFrame = Math.floor(videoPlayer.currentTime * currentVideo.fps);
+                const trackId = document.getElementById('track-id').value;
+                
+                if (!trackId) {
+                    showStatus('Please set a Track ID first', 'error');
+                    return;
+                }
+                
+                if (type === 'start') {
+                    document.getElementById('start-frame').value = currentFrame;
+                    document.getElementById('interp-track-id').value = trackId;
+                    showStatus(`Start keyframe set to frame ${currentFrame}`, 'success');
+                } else if (type === 'end') {
+                    document.getElementById('end-frame').value = currentFrame;
+                    document.getElementById('interp-track-id').value = trackId;
+                    showStatus(`End keyframe set to frame ${currentFrame}`, 'success');
+                }
+                
+                updateInterpolationStatus();
+            }
+            
+            function updateInterpolationStatus() {
+                const startFrame = parseInt(document.getElementById('start-frame').value) || 0;
+                const endFrame = parseInt(document.getElementById('end-frame').value) || 0;
+                const trackId = document.getElementById('interp-track-id').value;
+                const statusDiv = document.getElementById('interpolation-status');
+                
+                if (!trackId) {
+                    statusDiv.textContent = 'Set a track ID to enable interpolation';
+                    return;
+                }
+                
+                if (startFrame >= endFrame) {
+                    statusDiv.textContent = 'Start frame must be before end frame';
+                    statusDiv.style.color = 'var(--error-color)';
+                    return;
+                }
+                
+                const frameCount = endFrame - startFrame - 1;
+                if (frameCount > 0) {
+                    statusDiv.textContent = `Will create ${frameCount} interpolated annotations`;
+                    statusDiv.style.color = 'var(--success-color)';
+                } else {
+                    statusDiv.textContent = 'Need at least 2 frames gap for interpolation';
+                    statusDiv.style.color = 'var(--warning-color)';
+                }
+            }
+            
+            async function performInterpolation() {
+                const startFrame = parseInt(document.getElementById('start-frame').value);
+                const endFrame = parseInt(document.getElementById('end-frame').value);
+                const trackId = parseInt(document.getElementById('interp-track-id').value);
+                
+                if (!trackId || isNaN(trackId)) {
+                    showStatus('Please enter a valid Track ID', 'error');
+                    return;
+                }
+                
+                if (isNaN(startFrame) || isNaN(endFrame)) {
+                    showStatus('Please enter valid start and end frames', 'error');
+                    return;
+                }
+                
+                if (startFrame >= endFrame) {
+                    showStatus('Start frame must be before end frame', 'error');
+                    return;
+                }
+                
+                if (endFrame - startFrame < 2) {
+                    showStatus('Need at least 2 frames between keyframes', 'error');
+                    return;
+                }
+                
+                try {
+                    showStatus('Generating interpolated annotations...', 'success');
+                    
+                    const response = await fetch('/api/annotations/interpolate', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            start_frame: startFrame,
+                            end_frame: endFrame,
+                            track_id: trackId,
+                            interpolation_type: 'linear'
+                        })
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        showStatus(`Successfully created ${result.interpolated_count} interpolated annotations!`, 'success');
+                        
+                        // Update the status display
+                        document.getElementById('interpolation-status').textContent = 
+                            `✅ Created ${result.interpolated_count} annotations for track ${trackId}`;
+                        document.getElementById('interpolation-status').style.color = 'var(--success-color)';
+                        
+                        // Refresh annotations for current frame
+                        loadFrameAnnotations();
+                    } else {
+                        const error = await response.json();
+                        throw new Error(error.detail || 'Interpolation failed');
+                    }
+                } catch (error) {
+                    console.error('Interpolation error:', error);
+                    showStatus(`Interpolation failed: ${error.message}`, 'error');
+                }
+            }
+            
+            // Add event listeners for interpolation inputs
+            document.addEventListener('DOMContentLoaded', function() {
+                const startFrameInput = document.getElementById('start-frame');
+                const endFrameInput = document.getElementById('end-frame');
+                const trackIdInput = document.getElementById('interp-track-id');
+                
+                if (startFrameInput) startFrameInput.addEventListener('input', updateInterpolationStatus);
+                if (endFrameInput) endFrameInput.addEventListener('input', updateInterpolationStatus);
+                if (trackIdInput) trackIdInput.addEventListener('input', updateInterpolationStatus);
+            });
         </script>
     </body>
     </html>
