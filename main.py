@@ -1067,13 +1067,54 @@ def get_html_content():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Video Annotation Tool</title>
         <style>
-            * { margin: 0; padding: 0; box-sizing: border-box; }
+            :root {
+                /* Light theme colors */
+                --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                --secondary-gradient: linear-gradient(135deg, #764ba2, #667eea);
+                --bg-primary: #ffffff;
+                --bg-secondary: #f8f9fa;
+                --text-primary: #333333;
+                --text-secondary: #666666;
+                --border-color: #e0e0e0;
+                --accent-color: #667eea;
+                --success-color: #4CAF50;
+                --error-color: #f44336;
+                --warning-color: #ff9800;
+                --shadow-light: rgba(0, 0, 0, 0.1);
+                --shadow-medium: rgba(0, 0, 0, 0.15);
+                --glass-bg: rgba(255, 255, 255, 0.95);
+            }
+            
+            [data-theme="dark"] {
+                /* Dark theme colors */
+                --primary-gradient: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                --secondary-gradient: linear-gradient(135deg, #16213e, #1a1a2e);
+                --bg-primary: #1e1e1e;
+                --bg-secondary: #2d2d2d;
+                --text-primary: #ffffff;
+                --text-secondary: #cccccc;
+                --border-color: #404040;
+                --accent-color: #7b68ee;
+                --success-color: #66bb6a;
+                --error-color: #ef5350;
+                --warning-color: #ffb74d;
+                --shadow-light: rgba(0, 0, 0, 0.3);
+                --shadow-medium: rgba(0, 0, 0, 0.4);
+                --glass-bg: rgba(30, 30, 30, 0.95);
+            }
+            
+            * { 
+                margin: 0; 
+                padding: 0; 
+                box-sizing: border-box; 
+                transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+            }
             
             body {
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                background: var(--primary-gradient);
                 min-height: 100vh;
-                color: #333;
+                color: var(--text-primary);
             }
             
             .container {
@@ -1083,26 +1124,82 @@ def get_html_content():
             }
             
             .header {
-                background: rgba(255, 255, 255, 0.95);
+                background: var(--glass-bg);
                 backdrop-filter: blur(10px);
                 border-radius: 15px;
                 padding: 30px;
                 margin-bottom: 30px;
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                box-shadow: 0 8px 32px var(--shadow-light);
                 text-align: center;
+                position: relative;
+            }
+            
+            .theme-toggle {
+                position: absolute;
+                top: 20px;
+                right: 20px;
+                background: var(--accent-color);
+                color: white;
+                border: none;
+                width: 40px;
+                height: 40px;
+                border-radius: 50%;
+                cursor: pointer;
+                font-size: 18px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 4px 15px var(--shadow-medium);
+                transition: all 0.3s ease;
+            }
+            
+            .theme-toggle:hover {
+                transform: translateY(-2px) scale(1.1);
+                box-shadow: 0 6px 20px var(--shadow-medium);
             }
             
             .header h1 {
                 font-size: 2.5em;
-                background: linear-gradient(135deg, #667eea, #764ba2);
+                background: var(--primary-gradient);
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
                 margin-bottom: 10px;
             }
             
             .header p {
-                color: #666;
+                color: var(--text-secondary);
                 font-size: 1.1em;
+            }
+            
+            .toolbar {
+                background: var(--glass-bg);
+                backdrop-filter: blur(10px);
+                border-radius: 12px;
+                padding: 15px;
+                margin-bottom: 20px;
+                box-shadow: 0 4px 15px var(--shadow-light);
+                display: flex;
+                align-items: center;
+                gap: 15px;
+                flex-wrap: wrap;
+            }
+            
+            .toolbar-group {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 8px 12px;
+                background: var(--bg-secondary);
+                border-radius: 8px;
+                border: 1px solid var(--border-color);
+            }
+            
+            .toolbar-group label {
+                font-size: 12px;
+                font-weight: 600;
+                color: var(--text-secondary);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
             }
             
             .main-content {
@@ -1406,6 +1503,9 @@ def get_html_content():
     <body>
         <div class="container">
             <div class="header">
+                <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Dark/Light Mode">
+                    <span id="theme-icon">🌙</span>
+                </button>
                 <h1>Video Annotation Tool</h1>
                 <p>Professional video annotation made simple and accessible</p>
             </div>
@@ -1426,6 +1526,34 @@ def get_html_content():
 
             <div class="main-content" id="main-content" style="display: none;">
                 <div class="video-section">
+                    <div class="toolbar">
+                        <div class="toolbar-group">
+                            <label>Playback</label>
+                            <button onclick="playPause()" title="Space: Play/Pause">⏯️</button>
+                            <button onclick="previousFrame()" title="Left Arrow: Previous Frame">⏮️</button>
+                            <button onclick="nextFrame()" title="Right Arrow: Next Frame">⏭️</button>
+                        </div>
+                        <div class="toolbar-group">
+                            <label>Speed</label>
+                            <select id="playback-speed" onchange="setPlaybackSpeed()" title="Playback Speed">
+                                <option value="0.25">0.25x</option>
+                                <option value="0.5">0.5x</option>
+                                <option value="1" selected>1x</option>
+                                <option value="1.5">1.5x</option>
+                                <option value="2">2x</option>
+                            </select>
+                        </div>
+                        <div class="toolbar-group">
+                            <label>Jump</label>
+                            <button onclick="jumpFrames(-10)" title="Jump Back 10 Frames">⏪</button>
+                            <button onclick="jumpFrames(10)" title="Jump Forward 10 Frames">⏩</button>
+                        </div>
+                        <div class="toolbar-group">
+                            <label>Tools</label>
+                            <button onclick="toggleFullscreen()" title="F: Fullscreen">🔍</button>
+                            <button onclick="resetZoom()" title="Reset View">🎯</button>
+                        </div>
+                    </div>
                     <div id="video-container">
                         <video id="video-player" controls style="display: none;">
                             Your browser does not support the video tag.
@@ -1507,11 +1635,72 @@ def get_html_content():
             let currentAnnotation = null;
             let polygonPoints = [];
 
+            // Enhanced UI Variables
+            let isDarkMode = localStorage.getItem('darkMode') === 'true';
+            
             // Initialize the application
             document.addEventListener('DOMContentLoaded', function() {
                 setupEventListeners();
                 loadVideos();
+                initializeTheme();
+                setupEnhancedKeyboardShortcuts();
             });
+            
+            function initializeTheme() {
+                if (isDarkMode) {
+                    document.body.setAttribute('data-theme', 'dark');
+                    document.getElementById('theme-icon').textContent = '☀️';
+                } else {
+                    document.body.removeAttribute('data-theme');
+                    document.getElementById('theme-icon').textContent = '🌙';
+                }
+            }
+            
+            function toggleTheme() {
+                isDarkMode = !isDarkMode;
+                localStorage.setItem('darkMode', isDarkMode);
+                initializeTheme();
+                showStatus(isDarkMode ? 'Dark mode enabled' : 'Light mode enabled', 'success');
+            }
+            
+            function setupEnhancedKeyboardShortcuts() {
+                document.addEventListener('keydown', function(e) {
+                    // Don't trigger shortcuts when typing in input fields
+                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+                    
+                    switch(e.key.toLowerCase()) {
+                        case 'f':
+                            e.preventDefault();
+                            toggleFullscreen();
+                            break;
+                        case 'd':
+                            e.preventDefault();
+                            toggleTheme();
+                            break;
+                        case '1':
+                            e.preventDefault();
+                            setAnnotationTool('bbox');
+                            break;
+                        case '2':
+                            e.preventDefault();
+                            setAnnotationTool('polygon');
+                            break;
+                        case 'r':
+                            e.preventDefault();
+                            resetZoom();
+                            break;
+                        case '+':
+                        case '=':
+                            e.preventDefault();
+                            adjustPlaybackSpeed(1);
+                            break;
+                        case '-':
+                            e.preventDefault();
+                            adjustPlaybackSpeed(-1);
+                            break;
+                    }
+                });
+            }
 
             function setupEventListeners() {
                 const uploadArea = document.getElementById('upload-area');
@@ -1546,6 +1735,23 @@ def get_html_content():
 
                 // Keyboard shortcuts
                 document.addEventListener('keydown', handleKeyPress);
+                
+                // Enhanced UI controls
+                const themeToggle = document.getElementById('theme-toggle');
+                const fullscreenToggle = document.getElementById('fullscreen-toggle');
+                const resetZoomBtn = document.getElementById('reset-zoom');
+                const playPause = document.getElementById('play-pause');
+                const stepBackward = document.getElementById('step-backward');
+                const stepForward = document.getElementById('step-forward');
+                const speedSelector = document.getElementById('speed-selector');
+                
+                if (themeToggle) themeToggle.addEventListener('click', toggleTheme);
+                if (fullscreenToggle) fullscreenToggle.addEventListener('click', toggleFullscreen);
+                if (resetZoomBtn) resetZoomBtn.addEventListener('click', resetZoom);
+                if (playPause) playPause.addEventListener('click', togglePlayPause);
+                if (stepBackward) stepBackward.addEventListener('click', stepBackward);
+                if (stepForward) stepForward.addEventListener('click', stepForward);
+                if (speedSelector) speedSelector.addEventListener('change', handleSpeedChange);
             }
 
             function handleDragOver(e) {
@@ -1631,6 +1837,121 @@ def get_html_content():
                     });
                 } catch (error) {
                     showStatus('Failed to load videos', 'error');
+                }
+            }
+            
+            // Enhanced Toolbar Control Functions
+            function toggleFullscreen() {
+                const container = document.querySelector('.video-container');
+                if (!document.fullscreenElement) {
+                    container.requestFullscreen().then(() => {
+                        showStatus('Fullscreen enabled. Press ESC to exit.', 'success');
+                    }).catch(err => {
+                        console.error('Error attempting to enable fullscreen:', err);
+                    });
+                } else {
+                    document.exitFullscreen();
+                }
+            }
+            
+            function resetZoom() {
+                const canvas = document.getElementById('annotation-canvas');
+                const videoPlayer = document.getElementById('video-player');
+                
+                // Reset video and canvas transformations
+                if (videoPlayer) {
+                    videoPlayer.style.transform = 'scale(1)';
+                }
+                if (canvas) {
+                    canvas.style.transform = 'scale(1)';
+                }
+                
+                showStatus('Zoom reset to 100%', 'success');
+            }
+            
+            function togglePlayPause() {
+                const videoPlayer = document.getElementById('video-player');
+                const playPauseIcon = document.getElementById('play-pause').querySelector('span');
+                
+                if (videoPlayer.paused) {
+                    videoPlayer.play();
+                    playPauseIcon.textContent = '⏸️';
+                } else {
+                    videoPlayer.pause();
+                    playPauseIcon.textContent = '▶️';
+                }
+            }
+            
+            function stepBackward() {
+                const videoPlayer = document.getElementById('video-player');
+                if (videoPlayer && videoPlayer.readyState >= 2) {
+                    videoPlayer.currentTime = Math.max(0, videoPlayer.currentTime - (1 / 30)); // Step back 1 frame at 30fps
+                    updateTimeline();
+                }
+            }
+            
+            function stepForward() {
+                const videoPlayer = document.getElementById('video-player');
+                if (videoPlayer && videoPlayer.readyState >= 2) {
+                    videoPlayer.currentTime = Math.min(videoPlayer.duration, videoPlayer.currentTime + (1 / 30)); // Step forward 1 frame at 30fps
+                    updateTimeline();
+                }
+            }
+            
+            function handleSpeedChange(event) {
+                const speed = parseFloat(event.target.value);
+                const videoPlayer = document.getElementById('video-player');
+                if (videoPlayer) {
+                    videoPlayer.playbackRate = speed;
+                    showStatus(`Playback speed: ${speed}x`, 'success');
+                }
+            }
+            
+            function adjustPlaybackSpeed(direction) {
+                const speedSelector = document.getElementById('speed-selector');
+                const currentSpeed = parseFloat(speedSelector.value);
+                const speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+                const currentIndex = speeds.indexOf(currentSpeed);
+                
+                let newIndex = currentIndex + direction;
+                if (newIndex < 0) newIndex = 0;
+                if (newIndex >= speeds.length) newIndex = speeds.length - 1;
+                
+                const newSpeed = speeds[newIndex];
+                speedSelector.value = newSpeed;
+                
+                const videoPlayer = document.getElementById('video-player');
+                if (videoPlayer) {
+                    videoPlayer.playbackRate = newSpeed;
+                    showStatus(`Playback speed: ${newSpeed}x`, 'success');
+                }
+            }
+            
+            function jumpToTime(seconds) {
+                const videoPlayer = document.getElementById('video-player');
+                if (videoPlayer && videoPlayer.readyState >= 2) {
+                    const newTime = Math.max(0, Math.min(videoPlayer.duration, videoPlayer.currentTime + seconds));
+                    videoPlayer.currentTime = newTime;
+                    updateTimeline();
+                }
+            }
+            
+            function jumpBackward() {
+                jumpToTime(-10); // Jump back 10 seconds
+            }
+            
+            function jumpForward() {
+                jumpToTime(10); // Jump forward 10 seconds
+            }
+            
+            function updateTimeline() {
+                const videoPlayer = document.getElementById('video-player');
+                const timeline = document.getElementById('timeline');
+                
+                if (videoPlayer && timeline && videoPlayer.duration) {
+                    timeline.value = (videoPlayer.currentTime / videoPlayer.duration) * 100;
+                    document.getElementById('time-display').textContent = 
+                        `${formatTime(videoPlayer.currentTime)} / ${formatTime(videoPlayer.duration)}`;
                 }
             }
 
@@ -1745,7 +2066,14 @@ def get_html_content():
                     const currentFrame = Math.floor(video.currentTime * currentVideo.fps);
                     timeline.value = currentFrame;
                     updateFrameInfo();
+                    updateTimeline(); // Also update the enhanced timeline display
                     loadFrameAnnotations();
+                    
+                    // Update play/pause button icon
+                    const playPauseIcon = document.getElementById('play-pause')?.querySelector('span');
+                    if (playPauseIcon) {
+                        playPauseIcon.textContent = video.paused ? '▶️' : '⏸️';
+                    }
                 }
             }
 
