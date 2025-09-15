@@ -1,6 +1,6 @@
 # Video Annotation Tool
 
-A professional web-based video annotation tool built with FastAPI and modern web technologies. Designed for creating precise bounding box and polygon annotations on video frames with export capabilities to industry-standard formats.
+A custom web-based video annotation tool built with python, FastAPI and modern web technologies. Designed for creating precise bounding box and polygon annotations on video frames with export capabilities to industry-standard formats.
 
 
 ## ✨ Features
