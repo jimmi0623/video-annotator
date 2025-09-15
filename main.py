@@ -1117,6 +1117,35 @@ def get_html_content():
                 color: var(--text-primary);
             }
             
+            .page-header {
+                background: var(--glass-bg);
+                backdrop-filter: blur(10px);
+                border-bottom: 2px solid var(--accent-color);
+                padding: 1rem 2rem;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                box-shadow: 0 2px 10px var(--shadow-light);
+                position: sticky;
+                top: 0;
+                z-index: 1000;
+            }
+            
+            .page-header h1 {
+                color: var(--accent-color);
+                margin: 0;
+                font-size: 1.8rem;
+                font-weight: 600;
+                background: var(--primary-gradient);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }
+            
+            .header-controls {
+                display: flex;
+                gap: 1rem;
+            }
+            
             .container {
                 max-width: 1400px;
                 margin: 0 auto;
@@ -1210,40 +1239,44 @@ def get_html_content():
             }
             
             .video-section {
-                background: rgba(255, 255, 255, 0.95);
+                background: var(--glass-bg);
                 backdrop-filter: blur(10px);
                 border-radius: 15px;
                 padding: 30px;
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                box-shadow: 0 8px 32px var(--shadow-light);
             }
             
             .controls-panel {
-                background: rgba(255, 255, 255, 0.95);
+                background: var(--glass-bg);
                 backdrop-filter: blur(10px);
                 border-radius: 15px;
                 padding: 30px;
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                box-shadow: 0 8px 32px var(--shadow-light);
             }
             
             .upload-area {
-                border: 3px dashed #667eea;
+                border: 3px dashed var(--accent-color);
                 border-radius: 15px;
                 padding: 40px;
                 text-align: center;
                 margin-bottom: 30px;
                 transition: all 0.3s ease;
                 cursor: pointer;
+                background: var(--glass-bg);
+                backdrop-filter: blur(10px);
             }
             
             .upload-area:hover {
-                border-color: #764ba2;
-                background: rgba(102, 126, 234, 0.05);
+                border-color: var(--accent-color);
+                background: var(--bg-secondary);
                 transform: translateY(-2px);
+                box-shadow: 0 4px 15px var(--shadow-light);
             }
             
             .upload-area.dragover {
-                border-color: #764ba2;
-                background: rgba(102, 126, 234, 0.1);
+                border-color: var(--accent-color);
+                background: var(--bg-secondary);
+                box-shadow: 0 8px 25px var(--shadow-medium);
             }
             
             #video-container {
@@ -1397,11 +1430,11 @@ def get_html_content():
             }
             
             .export-section {
-                background: rgba(255, 255, 255, 0.95);
+                background: var(--glass-bg);
                 backdrop-filter: blur(10px);
                 border-radius: 15px;
                 padding: 30px;
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                box-shadow: 0 8px 32px var(--shadow-light);
                 margin-top: 30px;
             }
             
@@ -1437,12 +1470,17 @@ def get_html_content():
             }
             
             .video-list {
-                background: rgba(255, 255, 255, 0.95);
+                background: var(--glass-bg);
                 backdrop-filter: blur(10px);
                 border-radius: 15px;
                 padding: 30px;
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+                box-shadow: 0 8px 32px var(--shadow-light);
                 margin-bottom: 30px;
+            }
+            
+            .video-list h2 {
+                color: var(--text-primary);
+                margin-bottom: 20px;
             }
             
             .video-item {
@@ -1450,15 +1488,17 @@ def get_html_content():
                 justify-content: space-between;
                 align-items: center;
                 padding: 15px;
-                border: 1px solid #e0e0e0;
+                border: 1px solid var(--border-color);
                 border-radius: 10px;
                 margin-bottom: 15px;
                 transition: all 0.3s ease;
+                background: var(--bg-secondary);
             }
             
             .video-item:hover {
                 transform: translateY(-2px);
-                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+                box-shadow: 0 4px 15px var(--shadow-light);
+                border-color: var(--accent-color);
             }
             
             .video-item:last-child {
@@ -1466,12 +1506,12 @@ def get_html_content():
             }
             
             .video-info h3 {
-                color: #667eea;
+                color: var(--accent-color);
                 margin-bottom: 5px;
             }
             
             .video-meta {
-                color: #666;
+                color: var(--text-secondary);
                 font-size: 14px;
             }
             
@@ -1501,14 +1541,16 @@ def get_html_content():
         </style>
     </head>
     <body>
-        <div class="container">
-            <div class="header">
-                <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Dark/Light Mode">
+        <header class="page-header">
+            <h1>JR Video Annotation Tool</h1>
+            <div class="header-controls">
+                <button id="theme-toggle" class="theme-toggle" title="Toggle Dark/Light Mode">
                     <span id="theme-icon">🌙</span>
                 </button>
-                <h1>Video Annotation Tool</h1>
-                <p>Professional video annotation made simple and accessible</p>
             </div>
+        </header>
+        
+        <div class="container">
 
             <div class="video-list" id="video-list" style="display: none;">
                 <h2>Uploaded Videos</h2>
@@ -1519,9 +1561,6 @@ def get_html_content():
                 <h3>Upload Video</h3>
                 <p>Drag and drop your video file here or click to select</p>
                 <input type="file" id="video-input" accept="video/*" style="display: none;">
-                <button type="button" onclick="document.getElementById('video-input').click()">
-                    Choose File
-                </button>
             </div>
 
             <div class="main-content" id="main-content" style="display: none;">
@@ -1529,29 +1568,33 @@ def get_html_content():
                     <div class="toolbar">
                         <div class="toolbar-group">
                             <label>Playback</label>
-                            <button onclick="playPause()" title="Space: Play/Pause">⏯️</button>
-                            <button onclick="previousFrame()" title="Left Arrow: Previous Frame">⏮️</button>
-                            <button onclick="nextFrame()" title="Right Arrow: Next Frame">⏭️</button>
+                            <button id="play-pause" title="Space: Play/Pause">
+                                <span>▶️</span>
+                            </button>
+                            <button id="step-backward" title="Left Arrow: Previous Frame">⏮️</button>
+                            <button id="step-forward" title="Right Arrow: Next Frame">⏭️</button>
                         </div>
                         <div class="toolbar-group">
                             <label>Speed</label>
-                            <select id="playback-speed" onchange="setPlaybackSpeed()" title="Playback Speed">
+                            <select id="speed-selector" title="Playback Speed">
                                 <option value="0.25">0.25x</option>
                                 <option value="0.5">0.5x</option>
+                                <option value="0.75">0.75x</option>
                                 <option value="1" selected>1x</option>
+                                <option value="1.25">1.25x</option>
                                 <option value="1.5">1.5x</option>
                                 <option value="2">2x</option>
                             </select>
                         </div>
                         <div class="toolbar-group">
                             <label>Jump</label>
-                            <button onclick="jumpFrames(-10)" title="Jump Back 10 Frames">⏪</button>
-                            <button onclick="jumpFrames(10)" title="Jump Forward 10 Frames">⏩</button>
+                            <button onclick="jumpBackward()" title="Jump Back 10s">⏪</button>
+                            <button onclick="jumpForward()" title="Jump Forward 10s">⏩</button>
                         </div>
                         <div class="toolbar-group">
                             <label>Tools</label>
-                            <button onclick="toggleFullscreen()" title="F: Fullscreen">🔍</button>
-                            <button onclick="resetZoom()" title="Reset View">🎯</button>
+                            <button id="fullscreen-toggle" title="F: Fullscreen">🔍</button>
+                            <button id="reset-zoom" title="R: Reset View">🎯</button>
                         </div>
                     </div>
                     <div id="video-container">
@@ -1749,8 +1792,8 @@ def get_html_content():
                 if (fullscreenToggle) fullscreenToggle.addEventListener('click', toggleFullscreen);
                 if (resetZoomBtn) resetZoomBtn.addEventListener('click', resetZoom);
                 if (playPause) playPause.addEventListener('click', togglePlayPause);
-                if (stepBackward) stepBackward.addEventListener('click', stepBackward);
-                if (stepForward) stepForward.addEventListener('click', stepForward);
+                if (stepBackward) stepBackward.addEventListener('click', stepBackwardFrame);
+                if (stepForward) stepForward.addEventListener('click', stepForwardFrame);
                 if (speedSelector) speedSelector.addEventListener('change', handleSpeedChange);
             }
 
@@ -1842,13 +1885,16 @@ def get_html_content():
             
             // Enhanced Toolbar Control Functions
             function toggleFullscreen() {
-                const container = document.querySelector('.video-container');
+                const container = document.getElementById('video-container');
                 if (!document.fullscreenElement) {
-                    container.requestFullscreen().then(() => {
-                        showStatus('Fullscreen enabled. Press ESC to exit.', 'success');
-                    }).catch(err => {
-                        console.error('Error attempting to enable fullscreen:', err);
-                    });
+                    if (container) {
+                        container.requestFullscreen().then(() => {
+                            showStatus('Fullscreen enabled. Press ESC to exit.', 'success');
+                        }).catch(err => {
+                            console.error('Error attempting to enable fullscreen:', err);
+                            showStatus('Fullscreen not supported', 'error');
+                        });
+                    }
                 } else {
                     document.exitFullscreen();
                 }
@@ -1882,7 +1928,7 @@ def get_html_content():
                 }
             }
             
-            function stepBackward() {
+            function stepBackwardFrame() {
                 const videoPlayer = document.getElementById('video-player');
                 if (videoPlayer && videoPlayer.readyState >= 2) {
                     videoPlayer.currentTime = Math.max(0, videoPlayer.currentTime - (1 / 30)); // Step back 1 frame at 30fps
@@ -1890,7 +1936,7 @@ def get_html_content():
                 }
             }
             
-            function stepForward() {
+            function stepForwardFrame() {
                 const videoPlayer = document.getElementById('video-player');
                 if (videoPlayer && videoPlayer.readyState >= 2) {
                     videoPlayer.currentTime = Math.min(videoPlayer.duration, videoPlayer.currentTime + (1 / 30)); // Step forward 1 frame at 30fps
