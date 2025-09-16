@@ -1,29 +1,80 @@
-# Video Annotation Tool
+# JR Video Annotation Tool 🎬
 
-A custom web-based video annotation tool built with python, FastAPI and modern web technologies. Designed for creating precise bounding box and polygon annotations on video frames with export capabilities to industry-standard formats.
+**A Professional-Grade Video Annotation Platform** built with FastAPI and modern web technologies. Create, track, and manage video annotations with advanced AI-ready export capabilities.
+
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Latest-green)](https://fastapi.tiangolo.com)
+[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+[![Status](https://img.shields.io/badge/Status-Production%20Ready-success)](#)
 
 
-## ✨ Features
+## 🚀 Key Features
 
-### Core Functionality
-- **Video Upload & Processing**: Drag-and-drop video upload with automatic metadata extraction
-- **Multiple Annotation Types**: 
-  - Bounding boxes for object detection
-  - Polygons for precise shape annotation
-- **Frame-by-Frame Navigation**: Precise video control with timeline scrubbing
-- **Real-time Visualization**: Live annotation overlay on video frames
-- **Track ID Support**: Object tracking across frames
+### 🎯 **Advanced Annotation System**
+- **Bounding Box Annotation** with precision controls
+- **Polygon Annotation** for complex shapes  
+- **✨ Object Tracking & Interpolation** - Track objects across frames with automatic interpolation
+- **Track ID Management** for consistent object identification
+- **Frame-by-Frame Navigation** with precise controls
 
-### Export Capabilities
-- **COCO Format**: Industry-standard format for object detection datasets
-- **YOLO Format**: Popular format for YOLO model training
-- **JSON Export**: Complete annotation data with metadata
+### 🎬 **Professional Video Management**
+- **Multi-Format Support** (MP4, AVI, MOV, MKV, WebM)
+- **🖼️ Smart Video Thumbnails** - Auto-generated preview thumbnails with hover effects
+- **📊 Video Statistics** - Duration, FPS, resolution, file size display
+- **Drag & Drop Upload** with real-time progress tracking
+- **Video List Management** with rich metadata
 
-### User Experience
-- **Modern UI**: Professional gradient design with responsive layout
-- **Keyboard Shortcuts**: Space (play/pause), Arrow keys (frame navigation)
-- **Visual Feedback**: Status notifications and progress indicators
-- **Drag & Drop**: Intuitive file upload experience
+### ⚡ **Intelligent Workflows**
+- **🎯 Linear Interpolation** between keyframes for object tracking
+- **Automatic Annotation Generation** for video sequences  
+- **Collision Detection** prevents annotation conflicts
+- **Real-time Validation** and status feedback
+- **Professional Keyboard Shortcuts** for efficient workflow
+
+### 🎨 **Modern User Experience** 
+- **🌓 Dark/Light Theme** with smooth transitions and localStorage persistence
+- **Responsive Design** optimized for all screen sizes
+- **Professional Toolbar** with advanced playback controls
+- **Fullscreen Mode** for detailed annotation work
+- **Visual Status Messages** with contextual feedback
+
+### 📤 **Industry-Standard Exports**
+- **COCO Format** for computer vision research
+- **YOLO Format** for object detection training
+- **Custom JSON** schemas with complete metadata
+- **Pascal VOC XML** (coming soon)
+- **TensorFlow Records** (coming soon)
+
+### 🔧 **Production-Grade Infrastructure**
+- **SQLite Database** with optimized indexes and foreign keys
+- **Advanced Logging** with rotation and structured output
+- **Resource Management** with automatic cleanup and monitoring
+- **Comprehensive Error Handling** and recovery systems
+- **Background Tasks** for performance optimization
+- **Security Features** with input validation and sanitization
+
+## 🆕 Latest Updates (v1.2.0)
+
+### 🎯 **Object Tracking & Interpolation System**
+- **Linear interpolation** between bounding boxes and polygons
+- **One-click keyframe setting** for start/end frames
+- **Automatic annotation generation** across frame ranges
+- **Smart collision detection** to prevent overwrites
+- **Track ID validation** and consistency checking
+
+### 🖼️ **Smart Thumbnail System** 
+- **Automatic thumbnail generation** using OpenCV and PIL
+- **Multiple preview thumbnails** for video segments
+- **Hover effects** with thumbnail previews
+- **Fallback thumbnail display** with graceful error handling
+- **Base64 embedded thumbnails** for fast loading
+
+### 🎨 **Enhanced User Interface**
+- **Professional page header** with branding
+- **Modern video list layout** with rich statistics
+- **Interpolation control panel** with visual feedback
+- **Improved toolbar** with speed controls and navigation
+- **Better error messages** and user guidance
 
 ## 🚀 Quick Start
 
@@ -63,46 +114,50 @@ A custom web-based video annotation tool built with python, FastAPI and modern w
 5. **Access the application**
    Open your browser and navigate to `http://localhost:8000`
 
-## 🎯 Usage
+## 🎯 Usage Guide
 
-### Uploading Videos
-1. Drag and drop a video file onto the upload area, or click to select
-2. Supported formats: MP4, AVI, MOV, MKV
-3. Video metadata is automatically extracted and stored
+### 📹 **Video Management**
+1. **Upload**: Drag and drop videos or click to select
+2. **Preview**: View auto-generated thumbnails and metadata
+3. **Load**: Click thumbnails or "Load Video" to start annotating
+4. **Delete**: Remove videos with confirmation dialog
 
-### Managing Videos
-- **Load Video**: Click "Load Video" to open a video for annotation
-- **Delete Video**: Click "Delete" to permanently remove a video
-  - Deletes the video file from storage
-  - Removes all associated annotations
-  - Confirms deletion with a warning dialog
-  - Updates the video list automatically
-
-### Creating Annotations
+### 🎯 **Creating Annotations**
 
 #### Bounding Boxes
 1. Select "Bounding Box" tool
-2. Click and drag on the video frame to create a rectangle
-3. Enter class name (e.g., "person", "car")
-4. Optionally add track ID for object tracking
+2. Click and drag on the video frame
+3. Enter class name and Track ID
+4. Annotation saves automatically
 
-#### Polygons
+#### Polygons  
 1. Select "Polygon" tool
-2. Click points around the object to create vertices
-3. Double-click to close the polygon
-4. Enter class name and optional track ID
+2. Click points to create vertices
+3. Double-click to close polygon
+4. Enter class name and Track ID
 
-### Navigation
-- **Play/Pause**: Space bar or play button
-- **Frame Navigation**: Arrow keys or frame buttons
-- **Timeline**: Click or drag to jump to specific frames
-- **Current Frame Info**: Displayed in the control panel
+### ⚡ **Object Tracking Workflow**
+1. **Create Start Keyframe**: Annotate object on starting frame with Track ID
+2. **Navigate to End Frame**: Use timeline to jump to end position  
+3. **Create End Keyframe**: Annotate same object with same Track ID
+4. **Set Interpolation Points**: Click "📍 Set Start/End Keyframe" buttons
+5. **Generate Interpolation**: Click "✨ Interpolate Between Keyframes"
+6. **Review Results**: System creates smooth transitions automatically
 
-### Exporting Annotations
-1. Complete your annotations
-2. Choose export format (COCO or YOLO)
-3. Download the generated JSON file
-4. Use in your machine learning pipeline
+### ⌨️ **Keyboard Shortcuts**
+- **Space**: Play/Pause video
+- **←/→**: Navigate frames  
+- **F**: Toggle fullscreen
+- **D**: Toggle dark/light theme
+- **1/2**: Switch annotation tools
+- **+/-**: Adjust playback speed
+- **R**: Reset zoom
+
+### 📤 **Exporting Annotations**
+1. Complete annotations for your video
+2. Choose format: COCO or YOLO
+3. Download generated files
+4. Use in your ML pipeline
 
 ## 🏗️ Architecture
 
@@ -150,18 +205,23 @@ CREATE TABLE annotations (
 ## 🔧 API Reference
 
 ### Video Endpoints
-- `POST /api/upload-video` - Upload a new video
-- `GET /api/videos` - List all uploaded videos
-- `DELETE /api/videos/{video_id}` - Delete a video and all associated data
+- `POST /api/upload-video` - Upload with thumbnail generation
+- `GET /api/videos` - List with thumbnails and metadata
+- `DELETE /api/videos/{video_id}` - Delete with cleanup
+- `GET /api/videos/{video_id}/thumbnail` - Generate custom thumbnails
+- `POST /api/videos/{video_id}/regenerate-thumbnails` - Regenerate thumbnails
 
 ### Annotation Endpoints
 - `POST /api/annotations` - Create new annotation
-- `GET /api/annotations/{video_id}` - Get annotations for a video
-- `DELETE /api/annotations/{annotation_id}` - Delete an annotation
+- `GET /api/annotations/{video_id}` - Get annotations for video
+- `DELETE /api/annotations/{annotation_id}` - Delete annotation
+- `POST /api/annotations/interpolate` - Generate interpolated annotations
 
-### Export Endpoints
-- `GET /api/export/{video_id}?format=coco` - Export COCO format
-- `GET /api/export/{video_id}?format=yolo` - Export YOLO format
+### Export & Stats
+- `GET /api/export/{video_id}?format=coco` - COCO export
+- `GET /api/export/{video_id}?format=yolo` - YOLO export
+- `GET /api/videos/{video_id}/stats` - Video statistics
+- `GET /api/resources` - System resource usage
 
 ## 🛠️ Development
 
@@ -169,11 +229,12 @@ CREATE TABLE annotations (
 ```
 video-annotator/
 ├── main.py              # Main FastAPI application
-├── requirements.txt     # Python dependencies
-├── README.md           # Project documentation
-├── .gitignore          # Git ignore rules
-├── uploads/            # Video file storage (ignored)
-├── static/             # Static assets (ignored)
+├── config.py            # Configuration management  
+├── resource_manager.py  # Resource monitoring
+├── requirements.txt     # Dependencies
+├── README.md           # Documentation
+├── .env.example        # Environment template
+├── uploads/            # Video storage (ignored)
 └── annotations.db      # SQLite database (ignored)
 ```
 
@@ -213,8 +274,9 @@ fastapi>=0.100.0           # Web framework
 uvicorn[standard]>=0.20.0  # ASGI server
 python-multipart>=0.0.6    # File upload support
 opencv-python>=4.7.0       # Video processing
+Pillow>=11.0.0             # Image processing for thumbnails
 pydantic>=2.0.0            # Data validation
-pydantic-settings           # Configuration management
+pydantic-settings>=2.0.0   # Configuration management
 python-json-logger>=2.0.0  # Structured logging
 aiofiles>=23.1.0           # Async file operations
 python-dotenv>=1.0.0       # Environment variables
@@ -257,28 +319,28 @@ FROM python:3.9-slim
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🎯 Roadmap
+## 🛫 Roadmap
 
-### Version 1.1 (Coming Soon)
-- [ ] User authentication and authorization
-- [ ] Batch annotation tools
-- [ ] Video compression and optimization
-- [ ] Advanced export options
-- [ ] Annotation validation tools
+### 🔄 Current (v1.2.0) - COMPLETED ✅
+- ✅ Advanced object tracking and interpolation
+- ✅ Smart thumbnail generation system
+- ✅ Enhanced UI with dark/light themes  
+- ✅ Professional toolbar and controls
+- ✅ Database schema improvements
 
-### Version 1.2
-- [ ] Real-time collaboration
-- [ ] Machine learning integration
-- [ ] Advanced polygon editing
-- [ ] Custom class management
-- [ ] Annotation statistics and analytics
+### 📊 Next Release (v1.3.0)
+- [ ] **Analytics Dashboard** - Annotation statistics and progress tracking
+- [ ] **Advanced Annotation Tools** - Keypoint and line annotations
+- [ ] **Pascal VOC XML Export** - Additional export format
+- [ ] **Batch Operations** - Multi-frame annotation tools
+- [ ] **Annotation Validation** - Quality scoring system
 
-### Version 2.0
-- [ ] Multi-user support
-- [ ] Cloud storage integration
-- [ ] Advanced video processing
-- [ ] Mobile responsive design
-- [ ] API rate limiting and security
+### 🎯 Future (v1.4.0+)
+- [ ] **Video Preprocessing** - Trimming, format conversion
+- [ ] **Collaborative Features** - Multi-user annotation
+- [ ] **AI-Assisted Annotation** - Auto-tracking integration
+- [ ] **Cloud Storage** - S3/GCS integration
+- [ ] **Mobile Support** - Responsive mobile interface
 
 ## 🙏 Acknowledgments
 
